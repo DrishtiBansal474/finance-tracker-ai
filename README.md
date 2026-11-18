@@ -7,7 +7,7 @@ A personal finance dashboard for tracking transactions, monthly budgets, savings
 - Transaction tracking and reports
 - Monthly budgets with near-limit and overspending alerts
 - Savings goals
-- Account registration, login, and password reset
+- Account registration, login, and password reset with HttpOnly JWT session cookies
 - Strong password requirements and light/dark themes
 
 ## Requirements
@@ -47,10 +47,21 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 Password reset emails require `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`. These settings are optional for other local development.
 
+Run the session-cookie tests with:
+
+```powershell
+npm test
+```
+
 ## Production build
 
 ```powershell
 npm run build
 ```
 
-Set `JWT_SECRET`, `MONGO_URI`, and `CLIENT_ORIGIN` in the production environment before starting the API with `npm start`.
+Set `JWT_SECRET`, `MONGO_URI`, and `CLIENT_ORIGIN` in the production environment, then serve the built frontend and API together:
+
+```powershell
+$env:NODE_ENV = "production"
+npm start
+```

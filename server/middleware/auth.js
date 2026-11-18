@@ -1,9 +1,10 @@
 import jwt from "jsonwebtoken";
 import { User } from "../models.js";
+import { readSessionCookie } from "../session.js";
 
 export async function requireAuth(req, res, next) {
-  const [scheme, token] = (req.get("authorization") || "").split(" ");
-  if (scheme !== "Bearer" || !token) {
+  const token = readSessionCookie(req);
+  if (!token) {
     return res.status(401).json({ message: "Sign in to continue." });
   }
   try {

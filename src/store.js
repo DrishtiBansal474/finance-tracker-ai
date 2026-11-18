@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { api, getApiError, normalizeBudget, normalizeGoal, normalizeTransaction } from "./api";
 
 const makeId = () => globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const dateInMonth = (day, offset = 0) => {
@@ -20,85 +21,218 @@ const starterTransactions = [
   { id: "tx-9", title: "New headphones", amount: 3990, type: "expense", category: "Shopping", date: dateInMonth(16), notes: "" },
 ];
 
+const defaultCategories = {
+  income: ["Salary", "Freelancing", "Investment", "Business"],
+  expense: ["Food", "Travel", "Shopping", "Health", "Education", "Entertainment", "Bills"],
+};
+
+const demoData = () => ({
+  transactions: starterTransactions,
+  budgets: [
+    { id: "b-1", category: "Food", limit: 12000 },
+    { id: "b-2", category: "Travel", limit: 8000 },
+    { id: "b-3", category: "Shopping", limit: 10000 },
+    { id: "b-4", category: "Bills", limit: 28000 },
+  ],
+  goals: [
+    { id: "g-1", name: "MacBook Air", target: 150000, saved: 86500, deadline: dateInMonth(31, 4), icon: "laptop" },
+    { id: "g-2", name: "Weekend in Goa", target: 35000, saved: 22100, deadline: dateInMonth(15, 2), icon: "plane" },
+    { id: "g-3", name: "Emergency fund", target: 200000, saved: 76000, deadline: dateInMonth(31, 10), icon: "shield" },
+  ],
+  categories: defaultCategories,
+  currency: "INR",
+  profile: { name: "", email: "" },
+  theme: "light",
+});
+
+const isApiSession = () => useAuthStore.getState().mode === "api";
+
+async function persistMutation(set, request, apply) {
+  try {
+    const { data } = await request();
+    apply(data);
+    set({ operationError: "" });
+    return true;
+  } catch (error) {
+    set({ operationError: getApiError(error) });
+    return false;
+  }
+}
+
 export const useFinanceStore = create(
   persist(
     (set, get) => ({
-      transactions: starterTransactions,
-      budgets: [
-        { id: "b-1", category: "Food", limit: 12000 },
-        { id: "b-2", category: "Travel", limit: 8000 },
-        { id: "b-3", category: "Shopping", limit: 10000 },
-        { id: "b-4", category: "Bills", limit: 28000 },
-      ],
-      goals: [
-        { id: "g-1", name: "MacBook Air", target: 150000, saved: 86500, deadline: dateInMonth(31, 4), icon: "laptop" },
-        { id: "g-2", name: "Weekend in Goa", target: 35000, saved: 22100, deadline: dateInMonth(15, 2), icon: "plane" },
-        { id: "g-3", name: "Emergency fund", target: 200000, saved: 76000, deadline: dateInMonth(31, 10), icon: "shield" },
-      ],
-      categories: {
-        income: ["Salary", "Freelancing", "Investment", "Business"],
-        expense: ["Food", "Travel", "Shopping", "Health", "Education", "Entertainment", "Bills"],
-      },
-      currency: "INR",
-      profile: { name: "Aarav Mehta", email: "aarav.mehta@example.com" },
-      theme: "light",
-      addTransaction: (transaction) => set((state) => ({
-        transactions: [{ ...transaction, id: makeId() }, ...state.transactions],
-      })),
-      updateTransaction: (id, updates) => set((state) => ({
-        transactions: state.transactions.map((transaction) => transaction.id === id ? { ...transaction, ...updates } : transaction),
-      })),
-      deleteTransaction: (id) => set((state) => ({
-        transactions: state.transactions.filter((transaction) => transaction.id !== id),
-      })),
-      addBudget: (budget) => set((state) => ({
-        budgets: [...state.budgets.filter((item) => item.category !== budget.category), { ...budget, id: makeId() }],
-      })),
-      addGoal: (goal) => set((state) => ({ goals: [...state.goals, { ...goal, saved: 0, id: makeId() }] })),
-      contributeToGoal: (id, amount) => set((state) => ({
-        goals: state.goals.map((goal) => goal.id === id ? { ...goal, saved: Math.min(goal.target, goal.saved + amount) } : goal),
-      })),
-      addCategory: (type, category) => set((state) => {
-        const cleaned = category.trim();
-        if (!cleaned || state.categories[type].some((item) => item.toLowerCase() === cleaned.toLowerCase())) return state;
-        return { categories: { ...state.categories, [type]: [...state.categories[type], cleaned] } };
+      ...demoData(),
+      operationError: "",
+      replaceAccountData: (data) => set({ ...data, operationError: "" }),
+      resetForAccount: (user = {}) => set({
+        transactions: [],
+        budgets: [],
+        goals: [],
+        categories: user.categories || defaultCategories,
+        currency: user.currency || "INR",
+        profile: { name: user.name || "", email: user.email || "" },
+        theme: user.theme || "light",
+        operationError: "",
       }),
-      setCurrency: (currency) => set({ currency }),
-      setProfile: (profile) => set((state) => ({ profile: { ...state.profile, ...profile } })),
-      setTheme: (theme) => set({ theme }),
-      toggleTheme: () => set((state) => ({ theme: state.theme === "light" ? "dark" : "light" })),
+      resetDemoData: () => set({ ...demoData(), operationError: "" }),
+      clearOperationError: () => set({ operationError: "" }),
+      addTransaction: async (transaction) => {
+        if (isApiSession()) {
+          return persistMutation(set, () => api.post("/transactions", transaction), ({ item }) => {
+            set((state) => ({ transactions: [normalizeTransaction(item), ...state.transactions] }));
+          });
+        }
+        set((state) => ({ transactions: [{ ...transaction, id: makeId() }, ...state.transactions] }));
+        return true;
+      },
+      updateTransaction: async (id, updates) => {
+        if (isApiSession()) {
+          return persistMutation(set, () => api.patch(`/transactions/${id}`, updates), ({ item }) => {
+            const transaction = normalizeTransaction(item);
+            set((state) => ({ transactions: state.transactions.map((row) => row.id === id ? transaction : row) }));
+          });
+        }
+        set((state) => ({
+          transactions: state.transactions.map((transaction) => transaction.id === id ? { ...transaction, ...updates } : transaction),
+        }));
+        return true;
+      },
+      deleteTransaction: async (id) => {
+        if (isApiSession()) {
+          return persistMutation(set, () => api.delete(`/transactions/${id}`), () => {
+            set((state) => ({ transactions: state.transactions.filter((transaction) => transaction.id !== id) }));
+          });
+        }
+        set((state) => ({ transactions: state.transactions.filter((transaction) => transaction.id !== id) }));
+        return true;
+      },
+      addBudget: async (budget) => {
+        if (isApiSession()) {
+          const month = new Date().toISOString().slice(0, 7);
+          return persistMutation(set, () => api.put("/budgets", { ...budget, month }), ({ item }) => {
+            const saved = normalizeBudget(item);
+            set((state) => ({ budgets: [...state.budgets.filter((row) => row.category !== saved.category), saved] }));
+          });
+        }
+        set((state) => ({
+          budgets: [...state.budgets.filter((item) => item.category !== budget.category), { ...budget, id: makeId() }],
+        }));
+        return true;
+      },
+      addGoal: async (goal) => {
+        if (isApiSession()) {
+          return persistMutation(set, () => api.post("/goals", goal), ({ item }) => {
+            set((state) => ({ goals: [...state.goals, normalizeGoal(item)] }));
+          });
+        }
+        set((state) => ({ goals: [...state.goals, { ...goal, saved: 0, id: makeId() }] }));
+        return true;
+      },
+      contributeToGoal: async (id, amount) => {
+        if (isApiSession()) {
+          return persistMutation(set, () => api.post(`/goals/${id}/contributions`, { amount }), ({ item }) => {
+            const goal = normalizeGoal(item);
+            set((state) => ({ goals: state.goals.map((row) => row.id === id ? goal : row) }));
+          });
+        }
+        set((state) => ({
+          goals: state.goals.map((goal) => goal.id === id ? { ...goal, saved: Math.min(goal.target, goal.saved + amount) } : goal),
+        }));
+        return true;
+      },
+      addCategory: async (type, category) => {
+        const cleaned = category.trim();
+        if (!cleaned || !["income", "expense"].includes(type)) return false;
+        if (get().categories[type].some((item) => item.toLowerCase() === cleaned.toLowerCase())) {
+          set({ operationError: "That category already exists." });
+          return false;
+        }
+        const categories = { ...get().categories, [type]: [...get().categories[type], cleaned] };
+        if (isApiSession()) {
+          return persistMutation(set, () => api.patch("/auth/me", { categories }), ({ user }) => {
+            set({ categories: user.categories });
+          });
+        }
+        set({ categories });
+        return true;
+      },
+      setCurrency: async (currency) => {
+        if (isApiSession()) {
+          return persistMutation(set, () => api.patch("/auth/me", { currency }), () => set({ currency }));
+        }
+        set({ currency });
+        return true;
+      },
+      setProfile: async (profile) => {
+        if (isApiSession()) {
+          return persistMutation(set, () => api.patch("/auth/me", profile), ({ user }) => {
+            set({ profile: { name: user.name, email: user.email } });
+          });
+        }
+        set((state) => ({ profile: { ...state.profile, ...profile } }));
+        return true;
+      },
+      setTheme: async (theme) => {
+        if (isApiSession()) {
+          return persistMutation(set, () => api.patch("/auth/me", { theme }), () => set({ theme }));
+        }
+        set({ theme });
+        return true;
+      },
+      toggleTheme: () => get().setTheme(get().theme === "light" ? "dark" : "light"),
       clearLocalData: () => set({ transactions: starterTransactions, budgets: [], goals: [] }),
     }),
     {
       name: "fintrack-data",
       storage: createJSONStorage(() => localStorage),
-      partialize: ({ transactions, budgets, goals, categories, currency, profile, theme }) => ({
-        transactions, budgets, goals, categories, currency, profile, theme,
-      }),
+      version: 1,
+      migrate: () => demoData(),
+      partialize: ({ transactions, budgets, goals, categories, currency, profile, theme }) => (
+        profile.name && profile.email
+          ? {}
+          : { transactions, budgets, goals, categories, currency, profile, theme }
+      ),
     },
   ),
 );
 
 export const useAuthStore = create(
   persist(
-    (set) => ({
+    (set, get) => ({
       authenticated: false,
       mode: null,
       user: null,
-      signInDemo: () => set({ authenticated: true, mode: "demo", user: { name: "Aarav Mehta", email: "aarav.mehta@example.com" } }),
-      signIn: (user, token) => {
-        localStorage.setItem("fintrack-token", token);
-        set({ authenticated: true, mode: "api", user });
+      error: "",
+      clearError: () => set({ error: "" }),
+      signInDemo: () => {
+        set({ authenticated: true, mode: "demo", user: null, error: "" });
+        useFinanceStore.getState().resetDemoData();
       },
-      signOut: () => {
-        localStorage.removeItem("fintrack-token");
-        set({ authenticated: false, mode: null, user: null });
+      signIn: (user) => {
+        set({ authenticated: true, mode: "api", user, error: "" });
+        useFinanceStore.getState().resetForAccount(user);
+      },
+      signOut: async () => {
+        const shouldEndSession = get().mode === "api";
+        set({ authenticated: false, mode: null, user: null, error: "" });
+        useFinanceStore.getState().resetForAccount();
+        if (!shouldEndSession) return true;
+        try {
+          await api.post("/auth/logout");
+          return true;
+        } catch (error) {
+          set({ error: getApiError(error) });
+          return false;
+        }
       },
     }),
     {
       name: "fintrack-session",
       storage: createJSONStorage(() => localStorage),
-      partialize: ({ authenticated, mode, user }) => ({ authenticated, mode, user }),
+      version: 1,
+      migrate: () => ({ authenticated: false, mode: null, user: null, error: "" }),
+      partialize: ({ authenticated, mode }) => ({ authenticated, mode }),
     },
   ),
 );

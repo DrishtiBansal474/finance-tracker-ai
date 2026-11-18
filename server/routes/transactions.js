@@ -72,7 +72,8 @@ router.patch("/:id", async (req, res, next) => {
     if (!current) return res.status(404).json({ message: "Transaction not found." });
     const merged = { ...current, ...req.body };
     if (typeof merged.amount === "string") merged.amount = Number(merged.amount);
-    if (validDate(merged.date)) merged.date = merged.date.slice(0, 10);
+    if (merged.date instanceof Date && !Number.isNaN(merged.date.getTime())) merged.date = merged.date.toISOString().slice(0, 10);
+    else if (validDate(merged.date)) merged.date = merged.date.slice(0, 10);
     const errors = validInput(merged);
     if (errors.length) return res.status(400).json({ message: errors[0], errors });
     const update = {

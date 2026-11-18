@@ -6,6 +6,7 @@ import { User } from "../models.js";
 import { requireAuth } from "../middleware/auth.js";
 import { sendPasswordResetEmail } from "../services/email.js";
 import { isStrongPassword } from "../../shared/password.js";
+import { clearSessionCookie, setSessionCookie } from "../session.js";
 
 const router = Router();
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -17,6 +18,7 @@ const publicUser = (user) => ({
   currency: user.currency,
   theme: user.theme,
   avatarUrl: user.avatarUrl,
+  categories: user.categories,
 });
 const issueToken = (user) => jwt.sign(
   { sub: user.id, version: user.tokenVersion },
@@ -26,15 +28,17 @@ const issueToken = (user) => jwt.sign(
 
 router.post("/register", async (req, res, next) => {
   try {
-    const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
-    const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
-    const password = req.body.password;
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const password = body.password;
     if (name.length < 2 || name.length > 80 || !emailPattern.test(email) || email.length > 254 || !validPassword(password)) {
       return res.status(400).json({ message: "Enter a name and valid email. Passwords must be 8–72 characters and include uppercase and lowercase letters, a number, and a symbol." });
     }
     if (await User.exists({ email })) return res.status(409).json({ message: "An account with this email already exists." });
     const user = await User.create({ name, email, passwordHash: await bcrypt.hash(password, 12) });
-    return res.status(201).json({ user: publicUser(user), token: issueToken(user) });
+    setSessionCookie(res, issueToken(user));
+    return res.status(201).json({ user: publicUser(user) });
   } catch (error) {
     if (error.code === 11000) return res.status(409).json({ message: "An account with this email already exists." });
     return next(error);
@@ -43,8 +47,9 @@ router.post("/register", async (req, res, next) => {
 
 router.post("/login", async (req, res, next) => {
   try {
-    const email = typeof req.body.email === "string" ? req.body.email.trim().toLowerCase() : "";
-    const password = req.body.password;
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const password = body.password;
     if (!emailPattern.test(email) || typeof password !== "string") {
       return res.status(400).json({ message: "Enter a valid email address and password." });
     }
@@ -52,13 +57,75 @@ router.post("/login", async (req, res, next) => {
     if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
       return res.status(401).json({ message: "The email or password doesn’t look right." });
     }
-    return res.json({ user: publicUser(user), token: issueToken(user) });
+    setSessionCookie(res, issueToken(user));
+    return res.json({ user: publicUser(user) });
   } catch (error) {
     return next(error);
   }
 });
 
+router.post("/logout", (_req, res) => {
+  clearSessionCookie(res);
+  return res.status(204).end();
+});
+
 router.get("/me", requireAuth, (req, res) => res.json({ user: publicUser(req.user) }));
+
+router.patch("/me", requireAuth, async (req, res, next) => {
+  try {
+    const allowed = ["name", "email", "currency", "theme", "categories"];
+    if (!req.body || !Object.keys(req.body).length || Object.keys(req.body).some((key) => !allowed.includes(key))) {
+      return res.status(400).json({ message: "Include only profile or preference fields to update." });
+    }
+    const { name, email, currency, theme, categories } = req.body;
+    if (name !== undefined) {
+      if (typeof name !== "string" || name.trim().length < 2 || name.trim().length > 80) {
+        return res.status(400).json({ message: "Name must be between 2 and 80 characters." });
+      }
+      req.user.name = name.trim();
+    }
+    if (email !== undefined) {
+      if (typeof email !== "string" || !emailPattern.test(email.trim()) || email.trim().length > 254) {
+        return res.status(400).json({ message: "Enter a valid email address." });
+      }
+      const normalizedEmail = email.trim().toLowerCase();
+      if (await User.exists({ email: normalizedEmail, _id: { $ne: req.user.id } })) {
+        return res.status(409).json({ message: "An account with this email already exists." });
+      }
+      req.user.email = normalizedEmail;
+    }
+    if (currency !== undefined) {
+      if (!["INR", "USD", "EUR", "GBP", "CAD", "AUD"].includes(currency)) {
+        return res.status(400).json({ message: "Choose a supported currency." });
+      }
+      req.user.currency = currency;
+    }
+    if (theme !== undefined) {
+      if (!["light", "dark"].includes(theme)) return res.status(400).json({ message: "Choose a supported theme." });
+      req.user.theme = theme;
+    }
+    if (categories !== undefined) {
+      if (!categories || typeof categories !== "object" || Array.isArray(categories)
+        || !["income", "expense"].every((type) => Array.isArray(categories[type]))
+        || Object.keys(categories).some((type) => !["income", "expense"].includes(type))) {
+        return res.status(400).json({ message: "Provide income and expense category lists." });
+      }
+      for (const type of ["income", "expense"]) {
+        const values = categories[type].map((value) => typeof value === "string" ? value.trim() : "");
+        if (values.length > 50 || values.some((value) => !value || value.length > 50)
+          || new Set(values.map((value) => value.toLowerCase())).size !== values.length) {
+          return res.status(400).json({ message: "Categories must be unique names of 1 to 50 characters, with at most 50 per list." });
+        }
+        req.user.categories[type] = values;
+      }
+    }
+    await req.user.save();
+    return res.json({ user: publicUser(req.user) });
+  } catch (error) {
+    if (error.code === 11000) return res.status(409).json({ message: "An account with this email already exists." });
+    return next(error);
+  }
+});
 
 router.patch("/password", requireAuth, async (req, res, next) => {
   try {
