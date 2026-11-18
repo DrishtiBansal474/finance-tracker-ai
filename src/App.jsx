@@ -1,0 +1,669 @@
+import { useMemo, useState } from "react";
+import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { useMutation } from "@tanstack/react-query";
+import {
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Pie, PieChart,
+  ResponsiveContainer, Tooltip, XAxis, YAxis,
+} from "recharts";
+import {
+  ArrowDownLeft, ArrowDownRight, ArrowLeftRight, ArrowRight, ArrowUpRight, Bell, BriefcaseBusiness,
+  CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, Coffee, CreditCard,
+  Download, FileDown, Filter, Flag, Gauge, Gift, GraduationCap, HeartPulse, House,
+  Lightbulb, LogOut, Menu, Moon, MoreHorizontal, Package, Pencil, Plane, Plus, Search, Settings,
+  ShieldCheck, ShoppingBag, Sparkles, Sun, Target, Trash2, TrendingDown, TrendingUp, Wallet,
+  X, Laptop, Utensils, ChartNoAxesCombined, CircleDollarSign, LayoutDashboard,
+} from "lucide-react";
+import { api, getApiError } from "./api";
+import { getPasswordRequirements, isStrongPassword } from "../shared/password.js";
+import {
+  formatMoney, selectMonthlyTransactions, summarizeTransactions, useAuthStore, useFinanceStore,
+} from "./store";
+
+const navItems = [
+  { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
+  { to: "/transactions", label: "Transactions", icon: ArrowLeftRight },
+  { to: "/budgets", label: "Budgets", icon: Gauge },
+  { to: "/goals", label: "Savings goals", icon: Target },
+  { to: "/insights", label: "AI insights", icon: Sparkles, badge: "NEW" },
+  { to: "/reports", label: "Reports", icon: ChartNoAxesCombined },
+];
+
+const expenseColors = ["#6e75e8", "#f4aa62", "#55b99b", "#ec7f8e", "#69a9d8", "#a68bd2", "#9aa5b2"];
+const iconByCategory = {
+  Food: Utensils, Travel: Plane, Shopping: ShoppingBag, Health: HeartPulse, Education: GraduationCap,
+  Entertainment: Gift, Bills: House, Salary: BriefcaseBusiness, Freelancing: Laptop, Investment: TrendingUp,
+  Business: BriefcaseBusiness,
+};
+const pageTitles = {
+  "/": ["Good morning, Aarav", "Here’s what’s happening with your money."],
+  "/transactions": ["Transactions", "Every rupee, accounted for."],
+  "/budgets": ["Your budgets", "A little planning goes a long way."],
+  "/goals": ["Savings goals", "Big things start with small steps."],
+  "/insights": ["Your money, decoded", "Personalized insights to help you get ahead."],
+  "/reports": ["Reports & analytics", "A clearer picture of your financial year."],
+  "/settings": ["Settings", "Make FinTrack work the way you do."],
+};
+
+const monthShort = (date) => new Intl.DateTimeFormat("en", { month: "short" }).format(date);
+const localDate = () => {
+  const date = new Date();
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+};
+
+function App() {
+  const { theme, setTheme } = useFinanceStore();
+  return (
+    <div className={`app-root theme-${theme}`}>
+      <Routes>
+        <Route path="/login" element={<AuthPage />} />
+        <Route element={<ProtectedRoute />}>
+          <Route element={<AppShell />}>
+            <Route index element={<Dashboard />} />
+            <Route path="transactions" element={<TransactionsPage />} />
+            <Route path="budgets" element={<BudgetsPage />} />
+            <Route path="goals" element={<GoalsPage />} />
+            <Route path="insights" element={<InsightsPage />} />
+            <Route path="reports" element={<ReportsPage />} />
+            <Route path="settings" element={<SettingsPage />} />
+          </Route>
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </div>
+  );
+}
+
+function ProtectedRoute() {
+  const authenticated = useAuthStore((state) => state.authenticated);
+  const location = useLocation();
+  return authenticated ? <Outlet /> : <Navigate to="/login" replace state={{ from: location }} />;
+}
+
+function AuthPage() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { signInDemo, signIn } = useAuthStore();
+  const [registering, setRegistering] = useState(false);
+  const [resetMode, setResetMode] = useState(false);
+  const [feedback, setFeedback] = useState("");
+  const form = useForm({ defaultValues: { name: "", email: "", password: "" } });
+  const redirect = location.state?.from?.pathname || "/";
+
+  const onSubmit = async ({ name, email, password }) => {
+    setFeedback("");
+    try {
+      if (resetMode) {
+        await api.post("/auth/forgot-password", { email });
+        setFeedback("If your account exists, we’ll email you a reset link.");
+        return;
+      }
+      const { data } = await api.post(registering ? "/auth/register" : "/auth/login", { name, email, password });
+      signIn(data.user, data.token);
+      navigate(redirect, { replace: true });
+    } catch (error) {
+      setFeedback(`${getApiError(error)} Use the demo account to explore the app.`);
+    }
+  };
+
+  return (
+    <main className="auth-page">
+      <section className="auth-brand-panel">
+        <BrandMark />
+        <div className="auth-brand-copy">
+          <div className="eyebrow"><span className="eyebrow-dot" /> MONEY, MEET CLARITY</div>
+          <h1>Feel good<br />about your <span>money.</span></h1>
+          <p>One calm place to see where it goes, grow what stays, and plan what’s next.</p>
+        </div>
+        <div className="auth-mini-card">
+          <div className="mini-card-top"><span>Monthly savings</span><TrendingUp size={16} /></div>
+          <strong>₹24,580</strong>
+          <span className="mini-positive">↑ 12.8% <span>vs. last month</span></span>
+          <div className="mini-bars">{[36, 54, 42, 75, 58, 88, 70, 96, 68, 84, 74, 100].map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div>
+        </div>
+        <p className="auth-quote">“It’s not about having more. It’s about making more of what you have.”</p>
+      </section>
+      <section className="auth-form-panel">
+        <div className="auth-form-wrap">
+          <div className="auth-form-mobile-brand"><BrandMark /></div>
+          <div className="auth-form-heading">
+            <p className="eyebrow">{resetMode ? "ACCOUNT RECOVERY" : registering ? "YOUR NEXT CHAPTER" : "WELCOME BACK"}</p>
+            <h2>{resetMode ? "Reset your password" : registering ? "Create your account" : "Let’s get you in."}</h2>
+            <p>{resetMode ? "Enter the email linked to your account." : registering ? "A better relationship with money starts here." : "Your money dashboard is right where you left it."}</p>
+          </div>
+          <form className="auth-form" onSubmit={form.handleSubmit(onSubmit)}>
+            {registering && !resetMode && <FormField label="Your name" error={form.formState.errors.name?.message}><input placeholder="e.g. Aarav Mehta" {...form.register("name", { required: "Please enter your name" })} /></FormField>}
+            <FormField label="Email address" error={form.formState.errors.email?.message}><input type="email" placeholder="you@example.com" autoComplete="email" {...form.register("email", { required: "Enter a valid email address" })} /></FormField>
+            {!resetMode && <FormField label="Password" error={form.formState.errors.password?.message}><input type="password" placeholder={registering ? "Create a strong password" : "Your password"} autoComplete={registering ? "new-password" : "current-password"} {...form.register("password", { required: "Enter your password", minLength: { value: 8, message: "Use at least 8 characters" }, validate: (password) => !registering || isStrongPassword(password) || "Use 8–72 characters with uppercase and lowercase letters, a number, and a symbol." })} />{registering && <PasswordRequirements password={form.watch("password")} />}</FormField>}
+            {feedback && <p className="form-feedback" role="status">{feedback}</p>}
+            {!registering && !resetMode && <button className="text-button forgot-button" type="button" onClick={() => { setResetMode(true); setFeedback(""); }}>Forgot password?</button>}
+            <button type="submit" className="button button-primary auth-submit">{form.formState.isSubmitting ? "Please wait..." : resetMode ? "Send reset link" : registering ? "Create account" : "Sign in"} <ArrowRight size={17} /></button>
+          </form>
+          {resetMode ? <p className="auth-switch"><button type="button" onClick={() => { setResetMode(false); setFeedback(""); }}>Back to sign in</button></p> : (
+            <p className="auth-switch">{registering ? "Already have an account?" : "New to FinTrack?"} <button type="button" onClick={() => { setRegistering(!registering); setFeedback(""); }}> {registering ? "Sign in" : "Create an account"}</button></p>
+          )}
+          <div className="auth-divider"><span /> <small>OR TRY A SAMPLE ACCOUNT</small> <span /></div>
+          <button type="button" className="button button-secondary demo-button" onClick={() => { signInDemo(); navigate("/", { replace: true }); }}>Explore the demo <ArrowRight size={16} /></button>
+          <p className="auth-terms">By continuing, you agree to our <a href="#terms">Terms</a> and <a href="#privacy">Privacy Policy</a>.</p>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function BrandMark({ compact = false }) {
+  return <Link to="/" className={`brand-mark ${compact ? "brand-compact" : ""}`}><span className="brand-icon"><span /><span /><span /></span><span>fintrack<span className="brand-ai">.ai</span></span></Link>;
+}
+
+function AppShell() {
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [alertsOpen, setAlertsOpen] = useState(false);
+  const location = useLocation();
+  const { profile, theme, toggleTheme, transactions, budgets, goals, currency } = useFinanceStore();
+  const signOut = useAuthStore((state) => state.signOut);
+  const page = pageTitles[location.pathname] || pageTitles["/"];
+  const currentTransactions = selectMonthlyTransactions(transactions);
+  const spending = summarizeTransactions(currentTransactions).expenses;
+  const alerts = [
+    ...budgets.flatMap((budget) => {
+      const spent = currentTransactions.filter((tx) => tx.type === "expense" && tx.category === budget.category).reduce((sum, tx) => sum + Number(tx.amount), 0);
+      const percent = Math.round(spent / budget.limit * 100);
+      if (spent / budget.limit < 0.8) return [];
+      const over = spent > budget.limit;
+      return [{
+        id: budget.id,
+        title: over ? `${budget.category} is over budget` : `${budget.category} is at ${percent}%`,
+        detail: over ? `${formatMoney(spent - budget.limit, currency)} over this month’s limit.` : spent === budget.limit ? "You’ve reached this month’s limit." : "You’re getting close to this month’s limit.",
+        tone: over ? "danger" : "warning",
+      }];
+    }),
+    ...goals.filter((goal) => goal.target > 0 && goal.saved / goal.target >= 0.8).map((goal) => ({ id: goal.id, title: `${goal.name} is almost there`, detail: `${formatMoney(goal.saved, currency)} saved so far.` })),
+  ];
+
+  return (
+    <div className="shell">
+      {mobileOpen && <button className="mobile-backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
+      <aside className={`sidebar ${mobileOpen ? "sidebar-open" : ""}`}>
+        <div className="sidebar-brand"><BrandMark compact /><button className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label="Close menu"><X size={18} /></button></div>
+        <div className="workspace-label">YOUR WORKSPACE</div>
+        <nav className="side-nav" aria-label="Main navigation">
+          {navItems.map(({ to, label, icon: Icon, end, badge }) => (
+            <NavLink key={to} to={to} end={end} onClick={() => setMobileOpen(false)} className={({ isActive }) => `nav-link ${isActive ? "nav-link-active" : ""}`}>
+              <Icon size={18} strokeWidth={1.8} /><span>{label}</span>{badge && <small>{badge}</small>}
+            </NavLink>
+          ))}
+        </nav>
+        <div className="sidebar-spacer" />
+        <div className="sidebar-help"><div className="help-icon"><CircleHelp size={17} /></div><strong>Need a hand?</strong><p>We’re here if you need us.</p><a href="mailto:hello@fintrack.ai">Get in touch <ArrowRight size={13} /></a></div>
+        <div className="sidebar-profile">
+          <div className="avatar">{initials(profile.name)}</div>
+          <div className="profile-copy"><strong>{profile.name}</strong><span>Personal account</span></div>
+          <button className="icon-button profile-menu" title="Sign out" onClick={signOut}><LogOut size={16} /></button>
+        </div>
+      </aside>
+      <div className="main-column">
+        <header className="topbar">
+          <button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="Open menu"><Menu size={20} /></button>
+          <div className="breadcrumbs"><span>Workspace</span><ChevronRight size={14} /><strong>{page[0].replace(/^Good morning, .*/, "Overview")}</strong></div>
+          <div className="topbar-actions">
+            <div className="top-date"><CalendarDays size={15} />{new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" }).format(new Date())}</div>
+            <button className="icon-button theme-toggle" onClick={toggleTheme} title={`Switch to ${theme === "light" ? "dark" : "light"} theme`} aria-label="Toggle theme">{theme === "light" ? <Moon size={18} /> : <Sun size={18} />}</button>
+            <div className="notification-wrap">
+              <button className={`icon-button notification-button ${alerts.length ? "has-alert" : ""}`} onClick={() => setAlertsOpen(!alertsOpen)} aria-label="Notifications"><Bell size={18} />{alerts.length > 0 && <i />}</button>
+              {alertsOpen && <div className="notification-popover"><div className="popover-heading"><strong>Notifications</strong><span>{alerts.length} new</span></div>{alerts.length ? alerts.map((alert) => <div className={`notice-item ${alert.tone === "danger" ? "notice-danger" : ""}`} key={alert.id}><span className="notice-icon"><Bell size={15} /></span><div><strong>{alert.title}</strong><p>{alert.detail}</p></div></div>) : <div className="notice-empty"><Check size={17} /> You’re all caught up.</div>}<Link to="/budgets" className="popover-link" onClick={() => setAlertsOpen(false)}>View budgets <ArrowRight size={14} /></Link></div>}
+            </div>
+            <Link to="/settings" className="avatar top-avatar" aria-label="Account settings">{initials(profile.name)}</Link>
+          </div>
+        </header>
+        <main className="page-content">
+          <div className="page-heading"><div><p className="greeting-date">{new Intl.DateTimeFormat("en", { weekday: "long", month: "long", day: "numeric" }).format(new Date())}</p><h1>{page[0]}</h1><p>{page[1]}</p></div>{location.pathname === "/" && <Link className="button button-primary heading-action" to="/transactions?new=1"><Plus size={17} /> Add transaction</Link>}</div>
+          <Outlet />
+          <footer className="app-footer"><span>© {new Date().getFullYear()} FinTrack AI</span><span>Made for a little more financial peace of mind <span className="footer-heart">♥</span></span></footer>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard() {
+  const { transactions, budgets, goals, currency } = useFinanceStore();
+  const monthTx = selectMonthlyTransactions(transactions);
+  const previousMonth = selectMonthlyTransactions(transactions, new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1));
+  const thisTotals = summarizeTransactions(monthTx);
+  const lastTotals = summarizeTransactions(previousMonth);
+  const overall = summarizeTransactions(transactions);
+  const balance = overall.income - overall.expenses;
+  const savings = thisTotals.income - thisTotals.expenses;
+  const savingRate = thisTotals.income ? Math.max(0, Math.round(savings / thisTotals.income * 100)) : 0;
+  const categories = getCategorySpend(monthTx);
+  const trend = getTrendData(transactions);
+  const recent = [...transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
+  const spendingDiff = lastTotals.expenses ? Math.round((thisTotals.expenses - lastTotals.expenses) / lastTotals.expenses * 100) : null;
+
+  return <div className="dashboard-page">
+    <section className="stats-grid">
+      <StatCard label="Total balance" value={formatMoney(balance, currency, true)} icon={Wallet} tone="violet" helper="Across all accounts" trend={7.8} />
+      <StatCard label="Income this month" value={formatMoney(thisTotals.income, currency, true)} icon={ArrowDownLeft} tone="green" helper="Compared to last month" trend={compare(thisTotals.income, lastTotals.income)} />
+      <StatCard label="Spent this month" value={formatMoney(thisTotals.expenses, currency, true)} icon={ArrowUpRight} tone="orange" helper="Compared to last month" trend={spendingDiff} reverse />
+      <StatCard label="Saved this month" value={formatMoney(savings, currency, true)} icon={CircleDollarSign} tone="blue" helper={`${savingRate}% of this month’s income`} trend={null} />
+    </section>
+
+    <section className="dashboard-grid">
+      <article className="panel trend-panel">
+        <PanelHeading title="Cash flow" subtitle="Your income and spending over time">
+          <span className="period-pill"><span /> Last 6 months <ChevronDown size={14} /></span>
+        </PanelHeading>
+        <div className="chart-legend"><span><i className="legend-dot income-dot" />Income</span><span><i className="legend-dot expense-dot" />Expenses</span></div>
+        <div className="chart-large"><ResponsiveContainer width="100%" height="100%"><AreaChart data={trend} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}><defs><linearGradient id="incomeFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#52b89b" stopOpacity={0.18} /><stop offset="95%" stopColor="#52b89b" stopOpacity={0} /></linearGradient><linearGradient id="expenseFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#8783ec" stopOpacity={0.17} /><stop offset="95%" stopColor="#8783ec" stopOpacity={0} /></linearGradient></defs><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="4 5" /><XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 11 }} dy={10} /><YAxis axisLine={false} tickLine={false} tickFormatter={(value) => compactMoney(value, currency)} tick={{ fill: "var(--muted)", fontSize: 10 }} /><Tooltip content={<ChartTooltip currency={currency} />} /><Area type="monotone" dataKey="income" name="Income" stroke="#55b99b" strokeWidth={2.5} fill="url(#incomeFill)" activeDot={{ r: 5 }} /><Area type="monotone" dataKey="expenses" name="Expenses" stroke="#8783ec" strokeWidth={2.5} fill="url(#expenseFill)" activeDot={{ r: 5 }} /></AreaChart></ResponsiveContainer></div>
+        <div className="chart-footnote"><span><span className="footnote-line" /> A steady month is a good month.</span><Link to="/reports">See trends <ArrowRight size={13} /></Link></div>
+      </article>
+      <article className="panel spending-panel">
+        <PanelHeading title="Where it goes" subtitle="Spending by category this month"><button className="icon-button small-icon" aria-label="More category options"><MoreHorizontal size={19} /></button></PanelHeading>
+        {categories.length ? <><div className="pie-area"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={categories} dataKey="value" nameKey="name" innerRadius="66%" outerRadius="91%" paddingAngle={4} stroke="none">{categories.map((entry, index) => <Cell key={entry.name} fill={expenseColors[index % expenseColors.length]} />)}</Pie><Tooltip content={<ChartTooltip currency={currency} />} /></PieChart></ResponsiveContainer><div className="pie-center"><span>Total spent</span><strong>{formatMoney(thisTotals.expenses, currency, true)}</strong><small>this month</small></div></div><div className="category-legend">{categories.slice(0, 4).map((item, index) => <div key={item.name} className="category-legend-row"><span><i style={{ background: expenseColors[index % expenseColors.length] }} />{item.name}</span><strong>{Math.round(item.value / Math.max(thisTotals.expenses, 1) * 100)}%</strong></div>)}</div></> : <EmptyState icon={PieChart} title="Nothing to chart yet" text="Add a few expenses to see your spending breakdown." />}
+      </article>
+      <article className="panel recent-panel">
+        <PanelHeading title="Recent transactions" subtitle="The latest activity on your account"><Link to="/transactions" className="panel-link">See all <ArrowRight size={14} /></Link></PanelHeading>
+        <TransactionList transactions={recent} currency={currency} />
+      </article>
+      <article className="panel savings-panel">
+        <PanelHeading title="Savings goals" subtitle="Little by little adds up"><Link to="/goals" className="panel-link">All goals <ArrowRight size={14} /></Link></PanelHeading>
+        <div className="goal-mini-list">{goals.slice(0, 2).map((goal) => <GoalMini key={goal.id} goal={goal} currency={currency} />)}</div>
+        <Link to="/goals" className="add-goal-button"><span><Plus size={15} /></span> Set a new savings goal</Link>
+      </article>
+      <article className="panel budgets-home-panel">
+        <PanelHeading title="Budget check-in" subtitle="Stay on top of your monthly plan"><Link to="/budgets" className="panel-link">Manage <ArrowRight size={14} /></Link></PanelHeading>
+        <div className="budget-mini-list">{budgets.slice(0, 3).map((budget) => {
+          const used = monthTx.filter((tx) => tx.type === "expense" && tx.category === budget.category).reduce((sum, tx) => sum + Number(tx.amount), 0);
+          return <BudgetMini key={budget.id} name={budget.category} used={used} limit={budget.limit} currency={currency} />;
+        })}</div>
+        {!budgets.length && <EmptyState icon={Gauge} title="No budgets yet" text="Create a monthly plan to see your progress here." />}
+      </article>
+      <article className="insight-card">
+        <div className="insight-spark"><Sparkles size={18} /></div><div><span className="insight-kicker">A LITTLE INSIGHT FOR YOU</span><p>{spendingDiff !== null && spendingDiff > 0 ? `Your spending is up ${spendingDiff}% this month. A quick look at dining could help bring it back in balance.` : "You’ve saved consistently this month. Keep it up and your goals will be closer than they look."}</p><Link to="/insights">Explore your insights <ArrowRight size={14} /></Link></div><div className="insight-orb" />
+      </article>
+    </section>
+  </div>;
+}
+
+function StatCard({ label, value, icon: Icon, tone, helper, trend, reverse = false }) {
+  const positive = reverse ? Number(trend) <= 0 : Number(trend) >= 0;
+  return <article className="stat-card"><div className="stat-top"><span>{label}</span><span className={`stat-icon ${tone}`}><Icon size={18} /></span></div><strong className="stat-value">{value}</strong><div className="stat-bottom"><span>{helper}</span>{trend !== null && trend !== undefined && <span className={`stat-trend ${positive ? "trend-positive" : "trend-negative"}`}>{Number(trend) >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}{Math.abs(Number(trend))}%</span>}</div></article>;
+}
+
+function TransactionsPage() {
+  const { transactions, categories, currency, addTransaction, updateTransaction, deleteTransaction } = useFinanceStore();
+  const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [sort, setSort] = useState("date-desc");
+  const [dialog, setDialog] = useState(null);
+  const [page, setPage] = useState(1);
+  const location = useLocation();
+  const pageSize = 8;
+
+  useMemo(() => {
+    if (new URLSearchParams(location.search).get("new") === "1") setDialog({ mode: "create" });
+  }, [location.search]);
+
+  const filtered = transactions.filter((tx) => {
+    const matchesText = `${tx.title} ${tx.category} ${tx.notes || ""}`.toLowerCase().includes(search.toLowerCase());
+    return matchesText && (typeFilter === "all" || tx.type === typeFilter) && (categoryFilter === "all" || tx.category === categoryFilter);
+  }).sort((a, b) => sort === "date-asc" ? a.date.localeCompare(b.date) : sort === "amount-desc" ? b.amount - a.amount : b.date.localeCompare(a.date));
+  const pages = Math.ceil(filtered.length / pageSize);
+  const shown = filtered.slice((page - 1) * pageSize, page * pageSize);
+
+  const save = (values) => {
+    if (dialog?.mode === "edit") updateTransaction(dialog.transaction.id, { ...values, amount: Number(values.amount) });
+    else addTransaction({ ...values, amount: Number(values.amount) });
+    setDialog(null);
+  };
+
+  return <section className="page-section">
+    <div className="list-toolbar"><div className="search-field"><Search size={17} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Search transactions..." aria-label="Search transactions" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={14} /></button>}</div><div className="toolbar-filters"><label className="select-wrap"><Filter size={15} /><select value={typeFilter} onChange={(event) => { setTypeFilter(event.target.value); setPage(1); }} aria-label="Filter by transaction type"><option value="all">All types</option><option value="income">Income</option><option value="expense">Expense</option></select></label><label className="select-wrap"><select value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value); setPage(1); }} aria-label="Filter by category"><option value="all">All categories</option>{[...categories.income, ...categories.expense].map((cat) => <option key={cat} value={cat}>{cat}</option>)}</select></label><button className="button button-primary" onClick={() => setDialog({ mode: "create" })}><Plus size={16} /> Add transaction</button></div></div>
+    <div className="table-card"><div className="table-card-heading"><div><strong>All transactions</strong><span>{filtered.length} {filtered.length === 1 ? "entry" : "entries"}</span></div><label className="sort-select">Sort by <select value={sort} onChange={(event) => setSort(event.target.value)}><option value="date-desc">Newest first</option><option value="date-asc">Oldest first</option><option value="amount-desc">Largest amount</option></select><ChevronDown size={13} /></label></div>
+      <div className="table-scroll"><table className="data-table"><thead><tr><th>TRANSACTION</th><th>CATEGORY</th><th>DATE</th><th>AMOUNT</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
+        {shown.map((tx) => <TransactionRow key={tx.id} tx={tx} currency={currency} onEdit={() => setDialog({ mode: "edit", transaction: tx })} onDelete={() => { if (window.confirm(`Delete "${tx.title}"? This can’t be undone.`)) deleteTransaction(tx.id); }} />)}
+      </tbody></table></div>
+      {!shown.length && <EmptyState icon={Search} title="No matches found" text={transactions.length ? "Try another search or change your filters." : "Your transactions will show up here once you add one."} />}
+      <div className="table-pagination"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div><button className="icon-button small-icon" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label="Previous page"><ChevronLeft size={17} /></button><span className="page-number">{page} / {Math.max(pages, 1)}</span><button className="icon-button small-icon" disabled={page >= pages} onClick={() => setPage(page + 1)} aria-label="Next page"><ChevronRight size={17} /></button></div></div>
+    </div>
+    {dialog && <TransactionDialog transaction={dialog.transaction} categories={categories} onClose={() => setDialog(null)} onSave={save} />}
+  </section>;
+}
+
+function TransactionDialog({ transaction, categories, onClose, onSave }) {
+  const form = useForm({ defaultValues: transaction || { title: "", amount: "", type: "expense", category: "Food", date: localDate(), notes: "" } });
+  const [newCategory, setNewCategory] = useState("");
+  const addCategory = useFinanceStore((state) => state.addCategory);
+  const selectedType = form.watch("type");
+  const options = categories[selectedType] || [];
+  const submit = (values) => onSave({ ...values, amount: Number(values.amount), category: values.category || options[0] });
+  return <Modal title={transaction ? "Edit transaction" : "Add a transaction"} subtitle="A clear picture starts with the little things." onClose={onClose}>
+    <form className="dialog-form" onSubmit={form.handleSubmit(submit)}>
+      <FormField label="What was it for?" error={form.formState.errors.title?.message}><input placeholder="e.g. Weekly groceries" autoFocus {...form.register("title", { required: "Give this transaction a name" })} /></FormField>
+      <div className="form-row"><FormField label="Amount" error={form.formState.errors.amount?.message}><div className="input-prefix"><span>₹</span><input type="number" step="0.01" min="0.01" placeholder="0.00" {...form.register("amount", { required: "Enter an amount", min: { value: 0.01, message: "Amount should be greater than zero" } })} /></div></FormField><FormField label="Type"><select {...form.register("type", { onChange: () => form.setValue("category", "") })}><option value="expense">Expense</option><option value="income">Income</option></select></FormField></div>
+      <div className="form-row"><FormField label="Category"><select {...form.register("category")}>{options.map((category) => <option key={category} value={category}>{category}</option>)}</select></FormField><FormField label="Date"><input type="date" max={localDate()} {...form.register("date", { required: "Choose a date" })} /></FormField></div>
+      <div className="add-category-inline"><input value={newCategory} onChange={(event) => setNewCategory(event.target.value)} placeholder="Add a category" onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); if (newCategory.trim()) { addCategory(selectedType, newCategory); form.setValue("category", newCategory.trim()); setNewCategory(""); } } }} /><button type="button" onClick={() => { if (newCategory.trim()) { addCategory(selectedType, newCategory); form.setValue("category", newCategory.trim()); setNewCategory(""); } }}>+ Category</button></div>
+      <FormField label="Notes (optional)"><textarea rows="2" placeholder="Add a little context..." {...form.register("notes")} /></FormField>
+      <div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary">{transaction ? "Save changes" : "Add transaction"}</button></div>
+    </form>
+  </Modal>;
+}
+
+function TransactionRow({ tx, currency, onEdit, onDelete }) {
+  const Icon = iconByCategory[tx.category] || CircleDollarSign;
+  return <tr><td><div className="transaction-title-cell"><span className={`category-icon ${tx.type === "income" ? "cat-income" : ""}`}><Icon size={16} /></span><div><strong>{tx.title}</strong>{tx.notes && <small>{tx.notes}</small>}</div></div></td><td><span className="category-chip">{tx.category}</span></td><td className="date-cell">{new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" }).format(new Date(`${tx.date}T00:00:00`))}</td><td><span className={`amount-cell ${tx.type === "income" ? "amount-income" : ""}`}>{tx.type === "income" ? "+" : "−"}{formatMoney(tx.amount, currency)}</span></td><td><div className="row-actions"><button className="icon-button small-icon" onClick={onEdit} aria-label={`Edit ${tx.title}`}><Pencil size={14} /></button><button className="icon-button small-icon delete-action" onClick={onDelete} aria-label={`Delete ${tx.title}`}><Trash2 size={14} /></button></div></td></tr>;
+}
+
+function BudgetsPage() {
+  const { budgets, transactions, currency, addBudget, categories } = useFinanceStore();
+  const [showForm, setShowForm] = useState(false);
+  const [message, setMessage] = useState("");
+  const monthTx = selectMonthlyTransactions(transactions);
+  const form = useForm({ defaultValues: { category: categories.expense[0], limit: "" } });
+  const submit = (values) => {
+    addBudget({ ...values, limit: Number(values.limit) });
+    setShowForm(false);
+    setMessage(`${values.category} budget saved.`);
+    form.reset({ category: categories.expense[0], limit: "" });
+    window.setTimeout(() => setMessage(""), 3000);
+  };
+  return <section className="page-section">
+    <div className="section-intro-row"><div><div className="month-label"><CalendarDays size={15} /> {new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(new Date())}</div><p className="section-intro">A budget isn’t a restriction. It’s permission to spend on what matters.</p></div><button className="button button-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> Create a budget</button></div>
+    {message && <div className="success-message"><Check size={16} />{message}</div>}
+    {showForm && <form className="inline-create-card" onSubmit={form.handleSubmit(submit)}><div className="inline-form-title"><span className="stat-icon violet"><Gauge size={17} /></span><div><strong>Plan your monthly limit</strong><p>Choose a category and set a comfortable amount.</p></div><button type="button" className="icon-button small-icon" onClick={() => setShowForm(false)} aria-label="Close form"><X size={17} /></button></div><div className="form-row"><FormField label="Category" error={form.formState.errors.category?.message}><select {...form.register("category", { required: true })}>{categories.expense.map((category) => <option key={category}>{category}</option>)}</select></FormField><FormField label="Monthly limit" error={form.formState.errors.limit?.message}><div className="input-prefix"><span>₹</span><input type="number" min="1" placeholder="e.g. 12000" {...form.register("limit", { required: "Add a budget limit", min: { value: 1, message: "Limit should be greater than zero" } })} /></div></FormField></div><button type="submit" className="button button-primary">Save budget</button></form>}
+    {budgets.length ? <div className="budget-grid">{budgets.map((budget) => {
+      const spent = monthTx.filter((tx) => tx.type === "expense" && tx.category === budget.category).reduce((sum, tx) => sum + Number(tx.amount), 0);
+      return <BudgetCard key={budget.id} budget={budget} spent={spent} currency={currency} />;
+    })}</div> : <EmptyState icon={Gauge} title="Your plan starts here" text="Set a monthly budget for the categories that matter to you." />}
+    <div className="budget-tip"><div className="tip-icon"><Lightbulb size={18} /></div><div><strong>Give yourself a little breathing room</strong><p>Budgets work best when they’re realistic. Review them as your plans change, not just when the month begins.</p></div></div>
+  </section>;
+}
+
+function BudgetCard({ budget, spent, currency }) {
+  const ratio = spent / Math.max(budget.limit, 1);
+  const percent = spent >= budget.limit ? 100 : Math.floor(ratio * 100);
+  const danger = spent > budget.limit;
+  const atLimit = spent === budget.limit;
+  const warning = ratio >= 0.8 && !danger;
+  const Icon = iconByCategory[budget.category] || CircleDollarSign;
+  return <article className={`budget-card ${danger ? "budget-danger" : warning ? "budget-warning" : ""}`}><div className="budget-card-top"><span className="category-icon"><Icon size={17} /></span><span className="budget-spent-label">{danger ? "Spending alert" : ""}</span></div><div className="budget-title">{budget.category}<span>{(danger || atLimit || warning) && <span className="budget-warning-label">{danger ? "Over budget" : atLimit ? "Limit reached" : "Almost there"}</span>}</span></div><div className="budget-numbers"><strong>{formatMoney(spent, currency)}</strong><span>of {formatMoney(budget.limit, currency)}</span></div><div className="progress-track"><span style={{ width: `${Math.min(percent, 100)}%` }} /></div><div className="budget-card-bottom"><span>{percent}% used</span><strong className={danger || atLimit || warning ? "remaining-alert" : ""}>{danger ? `${formatMoney(spent - budget.limit, currency)} over` : atLimit ? "At limit" : `${formatMoney(budget.limit - spent, currency)} left`}</strong></div></article>;
+}
+
+function PasswordRequirements({ password }) {
+  return <ul className="password-requirements" aria-label="Password requirements">
+    {getPasswordRequirements(password).map(({ label, met }) => <li className={met ? "requirement-met" : ""} key={label}>{label}</li>)}
+  </ul>;
+}
+
+function GoalsPage() {
+  const { goals, currency, addGoal, contributeToGoal } = useFinanceStore();
+  const [showForm, setShowForm] = useState(false);
+  const [contributionGoal, setContributionGoal] = useState(null);
+  const [notice, setNotice] = useState("");
+  const form = useForm({ defaultValues: { name: "", target: "", deadline: "", icon: "target" } });
+  const contributionForm = useForm({ defaultValues: { amount: "" } });
+  const saveGoal = (values) => {
+    addGoal({ ...values, target: Number(values.target) });
+    form.reset({ name: "", target: "", deadline: "", icon: "target" });
+    setShowForm(false);
+    setNotice("Your new goal is ready. One step at a time!");
+    window.setTimeout(() => setNotice(""), 3500);
+  };
+  const contribute = (values) => {
+    contributeToGoal(contributionGoal.id, Number(values.amount));
+    setContributionGoal(null);
+    contributionForm.reset({ amount: "" });
+  };
+  return <section className="page-section">
+    <div className="section-intro-row"><div><div className="goal-summary"><span className="goal-summary-icon"><Target size={19} /></span><span><strong>{goals.length} goals in progress</strong><small>You’re building something good.</small></span></div></div><button className="button button-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> New savings goal</button></div>
+    {notice && <div className="success-message"><Check size={16} />{notice}</div>}
+    {showForm && <form className="inline-create-card goal-create" onSubmit={form.handleSubmit(saveGoal)}><div className="inline-form-title"><span className="stat-icon green"><Flag size={17} /></span><div><strong>What are you saving for?</strong><p>Give your goal a name, amount, and a little deadline.</p></div><button type="button" className="icon-button small-icon" onClick={() => setShowForm(false)} aria-label="Close form"><X size={17} /></button></div><FormField label="Goal name" error={form.formState.errors.name?.message}><input placeholder="e.g. A little getaway" {...form.register("name", { required: "Add a name for your goal" })} /></FormField><div className="form-row"><FormField label="Target amount" error={form.formState.errors.target?.message}><div className="input-prefix"><span>₹</span><input type="number" min="1" placeholder="e.g. 50000" {...form.register("target", { required: "Enter your target", min: { value: 1, message: "Target should be greater than zero" } })} /></div></FormField><FormField label="Target date"><input type="date" min={localDate()} {...form.register("deadline")} /></FormField></div><button type="submit" className="button button-primary">Create this goal</button></form>}
+    <div className="goal-grid">{goals.map((goal, index) => <GoalCard key={goal.id} goal={goal} currency={currency} index={index} onContribute={() => setContributionGoal(goal)} />)}{!goals.length && <EmptyState icon={Target} title="Dream it, then plan it" text="Create your first savings goal and watch the progress add up." />}</div>
+    <div className="goal-encouragement"><span className="encouragement-art"><Sparkles size={21} /></span><div><strong>Progress is progress, no matter how small.</strong><p>Even a tiny regular contribution can make a big difference over time.</p></div></div>
+    {contributionGoal && <Modal title="Add to your goal" subtitle={`Every little bit brings ${contributionGoal.name} closer.`} onClose={() => setContributionGoal(null)}><form className="dialog-form" onSubmit={contributionForm.handleSubmit(contribute)}><FormField label="How much would you like to add?" error={contributionForm.formState.errors.amount?.message}><div className="input-prefix"><span>₹</span><input type="number" min="1" max={contributionGoal.target - contributionGoal.saved} placeholder="e.g. 2500" autoFocus {...contributionForm.register("amount", { required: "Enter an amount", min: { value: 1, message: "Add at least ₹1" }, max: { value: contributionGoal.target - contributionGoal.saved, message: "That’s more than this goal needs" } })} /></div></FormField><div className="dialog-actions"><button type="button" className="button button-quiet" onClick={() => setContributionGoal(null)}>Cancel</button><button className="button button-primary" type="submit">Add savings</button></div></form></Modal>}
+  </section>;
+}
+
+function GoalCard({ goal, currency, index, onContribute }) {
+  const percent = Math.min(100, Math.round(goal.saved / Math.max(goal.target, 1) * 100));
+  const icon = goal.icon === "laptop" ? Laptop : goal.icon === "plane" ? Plane : goal.icon === "shield" ? ShieldCheck : Target;
+  const Icon = icon;
+  return <article className={`goal-card goal-tone-${index % 3}`}><div className="goal-card-top"><span className="goal-art-icon"><Icon size={20} /></span><button className="icon-button small-icon" aria-label={`Options for ${goal.name}`}><MoreHorizontal size={19} /></button></div><span className="goal-eyebrow">SAVING FOR</span><h3>{goal.name}</h3><div className="goal-amounts"><strong>{formatMoney(goal.saved, currency)}</strong><span>of {formatMoney(goal.target, currency)}</span></div><div className="progress-track goal-track"><span style={{ width: `${percent}%` }} /></div><div className="goal-progress-caption"><span>{percent}% there</span><span>{goal.deadline ? `Target: ${new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "numeric" }).format(new Date(`${goal.deadline}T00:00:00`))}` : "No deadline"}</span></div><div className="goal-card-footer"><span><span className="goal-status-dot" />{percent >= 100 ? "Goal reached!" : `${formatMoney(Math.max(goal.target - goal.saved, 0), currency)} to go`}</span><button className="button button-soft" onClick={onContribute} disabled={percent >= 100}><Plus size={15} /> Add savings</button></div></article>;
+}
+
+function GoalMini({ goal, currency }) {
+  const percent = Math.min(100, Math.round(goal.saved / Math.max(goal.target, 1) * 100));
+  const Icon = goal.icon === "laptop" ? Laptop : goal.icon === "plane" ? Plane : ShieldCheck;
+  return <div className="goal-mini"><span className="goal-mini-icon"><Icon size={17} /></span><div className="goal-mini-content"><div><strong>{goal.name}</strong><span>{percent}%</span></div><div className="progress-track"><span style={{ width: `${percent}%` }} /></div><small>{formatMoney(goal.saved, currency)} of {formatMoney(goal.target, currency)}</small></div></div>;
+}
+
+function InsightsPage() {
+  const { transactions, currency, goals } = useFinanceStore();
+  const monthTx = selectMonthlyTransactions(transactions);
+  const lastTx = selectMonthlyTransactions(transactions, new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1));
+  const current = summarizeTransactions(monthTx);
+  const previous = summarizeTransactions(lastTx);
+  const spendByCategory = getCategorySpend(monthTx);
+  const top = spendByCategory[0];
+  const spendDelta = previous.expenses ? Math.round((current.expenses - previous.expenses) / previous.expenses * 100) : 0;
+  const savingsRate = current.income ? Math.max(0, Math.round((current.income - current.expenses) / current.income * 100)) : 0;
+  const score = Math.max(34, Math.min(98, Math.round(54 + savingsRate * 0.45 + (spendDelta <= 0 ? 9 : 0) - spendDelta * 0.15)));
+  const mutation = useMutation({
+    mutationFn: async () => (await api.post("/insights/analyze", { transactions: monthTx, previousTransactions: lastTx })).data,
+  });
+  const analyze = () => mutation.mutate();
+  return <section className="page-section insights-page">
+    <div className="insights-score-card"><div className="score-orb"><div className="score-ring"><strong>{score}</strong><small>out of 100</small></div></div><div className="score-copy"><span className="insight-kicker">YOUR FINANCIAL WELLNESS</span><h2>{score >= 75 ? "You’re finding your rhythm." : "You’re building good habits."}</h2><p>Your money health score looks at spending patterns, savings progress, and how you’re tracking against your goals.</p><div className="score-pills"><span><span className="score-pip green-pip" />Savings rate <strong>{savingsRate}%</strong></span><span><span className="score-pip purple-pip" />Active goals <strong>{goals.length}</strong></span></div></div><Sparkles className="score-sparkle" size={40} /></div>
+    <div className="insights-section-heading"><div><h2>Your monthly read</h2><p>Real patterns, kind suggestions. Never judgment.</p></div><button className="button button-secondary" onClick={analyze} disabled={mutation.isPending}><Sparkles size={15} />{mutation.isPending ? "Looking at your numbers..." : "Get AI analysis"}</button></div>
+    {mutation.isError && <p className="form-feedback" role="alert">{getApiError(mutation.error)} We’ve still put together the insights below from your local data.</p>}
+    {mutation.data?.insights && <div className="ai-result"><Sparkles size={16} /><p>{mutation.data.insights}</p></div>}
+    <div className="insight-cards">
+      <InsightCard tone="lavender" icon={TrendingUp} label="YOUR SPENDING" title={spendDelta > 0 ? `Spending is up ${spendDelta}%` : spendDelta < 0 ? `Spending is down ${Math.abs(spendDelta)}%` : "You're on a steady track"} text={spendDelta > 0 ? `You spent ${formatMoney(current.expenses, currency)} this month. Take a closer look at ${top?.name?.toLowerCase() || "your flexible spending"} for an easy place to adjust.` : `You've spent ${formatMoney(current.expenses, currency)} this month. Keeping to this pace gives your savings room to grow.`} />
+      <InsightCard tone="mint" icon={CircleDollarSign} label="A GENTLE NUDGE" title={top ? `${top.name} is your biggest category` : "Every little habit counts"} text={top ? `${Math.round(top.value / Math.max(current.expenses, 1) * 100)}% of your spending is in ${top.name.toLowerCase()}. A small adjustment here could free up ${formatMoney(Math.round(top.value * 0.1), currency)} a month.` : "Add a few expenses to get a clearer picture of your spending habits."} />
+      <InsightCard tone="peach" icon={Target} label="LOOKING AHEAD" title={`${goals.length} lovely things to save for`} text={`You’ve got ${goals.length} active ${goals.length === 1 ? "goal" : "goals"}. Set up a small weekly transfer to keep the momentum going without thinking about it.`} />
+    </div>
+    <div className="insights-note"><ShieldCheck size={17} /><span>These insights are here to help you feel informed, not to give financial advice. Your choices are always yours.</span></div>
+  </section>;
+}
+
+function InsightCard({ tone, icon: Icon, label, title, text }) {
+  return <article className={`insight-tile ${tone}`}><div className="insight-tile-icon"><Icon size={18} /></div><span className="insight-kicker">{label}</span><h3>{title}</h3><p>{text}</p></article>;
+}
+
+function ReportsPage() {
+  const { transactions, currency } = useFinanceStore();
+  const [period, setPeriod] = useState("year");
+  const [reportType, setReportType] = useState("category");
+  const now = new Date();
+  const yearTx = transactions.filter((tx) => new Date(`${tx.date}T00:00:00`).getFullYear() === now.getFullYear());
+  const reportTx = period === "month" ? selectMonthlyTransactions(transactions) : yearTx;
+  const totals = summarizeTransactions(reportTx);
+  const categories = getCategorySpend(reportTx);
+  const exportCsv = () => {
+    const rows = [["Date", "Title", "Type", "Category", "Amount", "Notes"], ...reportTx.map((tx) => [tx.date, tx.title, tx.type, tx.category, tx.amount, tx.notes || ""])];
+    const content = `\uFEFF${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
+    downloadFile(content, `fintrack-${period}-report.csv`, "text/csv;charset=utf-8");
+  };
+  const exportExcel = async () => {
+    const XLSX = await import("xlsx");
+    const sheet = XLSX.utils.json_to_sheet(reportTx.map(({ date, title, type, category, amount, notes }) => ({ Date: date, Title: title, Type: type, Category: category, Amount: amount, Notes: notes || "" })));
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, sheet, "Transactions");
+    XLSX.writeFile(book, `fintrack-${period}-report.xlsx`);
+  };
+  const exportPdf = async () => {
+    const { jsPDF } = await import("jspdf");
+    const doc = new jsPDF();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(20);
+    doc.text("FinTrack AI", 18, 19);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(11);
+    doc.text(`${period === "month" ? "Monthly" : "Yearly"} report · ${new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(now)}`, 18, 28);
+    doc.text(`Income: ${formatMoney(totals.income, currency)}     Expenses: ${formatMoney(totals.expenses, currency)}     Net: ${formatMoney(totals.income - totals.expenses, currency)}`, 18, 39);
+    doc.setFont("helvetica", "bold");
+    doc.text("DATE", 18, 52); doc.text("TRANSACTION", 48, 52); doc.text("CATEGORY", 115, 52); doc.text("AMOUNT", 165, 52);
+    doc.setFont("helvetica", "normal");
+    let y = 61;
+    for (const tx of reportTx.slice(0, 24)) {
+      if (y > 275) { doc.addPage(); y = 20; }
+      doc.text(tx.date, 18, y);
+      doc.text(tx.title.slice(0, 27), 48, y);
+      doc.text(tx.category.slice(0, 18), 115, y);
+      doc.text(`${tx.type === "income" ? "+" : "-"}${formatMoney(tx.amount, currency)}`, 165, y);
+      y += 9;
+    }
+    doc.save(`fintrack-${period}-report.pdf`);
+  };
+  const trendData = getTrendData(transactions, 12);
+  return <section className="page-section report-page">
+    <div className="report-controls"><div className="segmented-control" role="group" aria-label="Report period"><button className={period === "month" ? "selected" : ""} onClick={() => setPeriod("month")}>This month</button><button className={period === "year" ? "selected" : ""} onClick={() => setPeriod("year")}>This year</button></div><div className="export-actions"><button className="button button-secondary" onClick={exportCsv}><Download size={15} /> CSV</button><button className="button button-secondary" onClick={exportExcel}><FileDown size={15} /> Excel</button><button className="button button-primary" onClick={exportPdf}><FileDown size={15} /> Download PDF</button></div></div>
+    <div className="report-summary-grid"><SummaryTile label="Income" value={formatMoney(totals.income, currency)} icon={ArrowDownLeft} tone="green" /><SummaryTile label="Expenses" value={formatMoney(totals.expenses, currency)} icon={ArrowUpRight} tone="orange" /><SummaryTile label="Net savings" value={formatMoney(totals.income - totals.expenses, currency)} icon={Wallet} tone="violet" /><SummaryTile label="Transactions" value={reportTx.length.toString()} icon={ArrowLeftRight} tone="blue" /></div>
+    <div className="panel report-chart-panel"><PanelHeading title="Income & expenses" subtitle="A month-by-month view of your cash flow"><label className="sort-select report-type-select"><select value={reportType} onChange={(event) => setReportType(event.target.value)}><option value="category">All categories</option><option value="income">Income only</option><option value="expense">Expenses only</option></select><ChevronDown size={13} /></label></PanelHeading><div className="report-chart"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={trendData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="4 5" /><XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 11 }} dy={9} /><YAxis axisLine={false} tickLine={false} tickFormatter={(value) => compactMoney(value, currency)} tick={{ fill: "var(--muted)", fontSize: 10 }} /><Tooltip content={<ChartTooltip currency={currency} />} /><Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "var(--muted)" }} /><Bar dataKey="income" name="Income" fill="#55b99b" radius={[4, 4, 0, 0]} barSize={14} hide={reportType === "expense"} /><Bar dataKey="expenses" name="Expenses" fill="#8580e5" radius={[4, 4, 0, 0]} barSize={14} hide={reportType === "income"} /></ComposedChart></ResponsiveContainer></div></div>
+    <div className="panel category-report-panel"><PanelHeading title="Spending by category" subtitle="Where your expenses are going"><span className="report-period-label">{period === "month" ? "THIS MONTH" : "THIS YEAR"}</span></PanelHeading>{categories.length ? <div className="category-report-list">{categories.map((item, index) => <div className="category-report-row" key={item.name}><span className="category-report-name"><i style={{ background: expenseColors[index % expenseColors.length] }} />{item.name}</span><div className="category-report-track"><span style={{ width: `${Math.round(item.value / categories[0].value * 100)}%`, background: expenseColors[index % expenseColors.length] }} /></div><strong>{formatMoney(item.value, currency)}</strong><small>{Math.round(item.value / Math.max(totals.expenses, 1) * 100)}%</small></div>)}</div> : <EmptyState icon={ChartNoAxesCombined} title="Not much to report yet" text="Add some expenses and your category report will appear here." />}</div>
+  </section>;
+}
+
+function SummaryTile({ label, value, icon: Icon, tone }) {
+  return <div className="summary-tile"><div className={`summary-icon ${tone}`}><Icon size={17} /></div><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function SettingsPage() {
+  const { profile, currency, setCurrency, setProfile, theme, setTheme, categories, addCategory } = useFinanceStore();
+  const { mode } = useAuthStore();
+  const [categoryType, setCategoryType] = useState("expense");
+  const [categoryValue, setCategoryValue] = useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "" });
+  const form = useForm({ defaultValues: profile });
+  const updateProfile = (values) => {
+    setProfile(values);
+    setMessage("Your profile details have been saved.");
+    setTimeout(() => setMessage(""), 3000);
+  };
+  const updatePassword = async (event) => {
+    event.preventDefault();
+    setError(""); setMessage("");
+    if (mode === "demo") { setError("Password updates are available after signing in to an account."); return; }
+    if (!isStrongPassword(passwordForm.newPassword)) {
+      setError("Use 8–72 characters with uppercase and lowercase letters, a number, and a symbol.");
+      return;
+    }
+    try {
+      await api.patch("/auth/password", passwordForm);
+      setMessage("Your password has been updated.");
+      setPasswordForm({ currentPassword: "", newPassword: "" });
+    } catch (issue) { setError(getApiError(issue)); }
+  };
+  const submitCategory = (event) => {
+    event.preventDefault();
+    if (!categoryValue.trim()) return;
+    addCategory(categoryType, categoryValue);
+    setCategoryValue("");
+    setMessage("Category added.");
+    setTimeout(() => setMessage(""), 3000);
+  };
+  return <section className="page-section settings-page">
+    {(message || error) && <div className={error ? "error-message" : "success-message"}>{error ? <CircleHelp size={16} /> : <Check size={16} />}{error || message}</div>}
+    <div className="settings-layout">
+      <div className="settings-main">
+        <article className="settings-card"><div className="settings-card-heading"><span className="settings-card-icon"><div className="avatar settings-avatar">{initials(profile.name)}</div></span><div><h2>Personal details</h2><p>The account details we use to personalize your experience.</p></div></div><form className="settings-form" onSubmit={form.handleSubmit(updateProfile)}><div className="form-row"><FormField label="Full name"><input {...form.register("name", { required: "Enter your name" })} /></FormField><FormField label="Email address"><input type="email" {...form.register("email", { required: "Enter your email" })} /></FormField></div><div className="settings-actions"><span>Your information is private to you.</span><button type="submit" className="button button-primary">Save changes</button></div></form></article>
+        <article className="settings-card"><div className="settings-card-heading"><span className="settings-card-icon"><ShieldCheck size={20} /></span><div><h2>Security</h2><p>Keep your account safe and sound.</p></div></div><form className="settings-form" onSubmit={updatePassword}><div className="form-row"><FormField label="Current password"><input type="password" autoComplete="current-password" value={passwordForm.currentPassword} onChange={(event) => setPasswordForm({ ...passwordForm, currentPassword: event.target.value })} /></FormField><FormField label="New password"><input type="password" minLength={8} autoComplete="new-password" value={passwordForm.newPassword} onChange={(event) => setPasswordForm({ ...passwordForm, newPassword: event.target.value })} /><PasswordRequirements password={passwordForm.newPassword} /></FormField></div><div className="settings-actions"><span>Use a unique password for this account.</span><button className="button button-secondary" type="submit">Update password</button></div></form></article>
+        <article className="settings-card"><div className="settings-card-heading"><span className="settings-card-icon"><Package size={20} /></span><div><h2>Your categories</h2><p>Make your spending categories feel like yours.</p></div></div><form className="add-setting-category" onSubmit={submitCategory}><select value={categoryType} onChange={(event) => setCategoryType(event.target.value)} aria-label="Category type"><option value="expense">Expense</option><option value="income">Income</option></select><input value={categoryValue} onChange={(event) => setCategoryValue(event.target.value)} placeholder="Name your category" /><button className="button button-secondary" type="submit"><Plus size={15} /> Add</button></form><div className="settings-category-list">{categories[categoryType].map((category, index) => <span key={category} style={{ "--category-color": expenseColors[index % expenseColors.length] }}><i />{category}</span>)}</div></article>
+      </div>
+      <aside className="settings-side">
+        <article className="settings-card preference-card"><div className="settings-card-heading"><span className="settings-card-icon"><CircleDollarSign size={20} /></span><div><h2>Preferences</h2><p>Small details, your way.</p></div></div><label className="preference-row"><span><strong>Currency</strong><small>Used across your dashboard</small></span><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option value="INR">₹ INR</option><option value="USD">$ USD</option><option value="EUR">€ EUR</option><option value="GBP">£ GBP</option><option value="CAD">C$ CAD</option><option value="AUD">A$ AUD</option></select></label><div className="preference-row"><span><strong>Appearance</strong><small>Make yourself at home</small></span><div className="theme-choice"><button className={theme === "light" ? "selected" : ""} aria-label="Light theme" onClick={() => setTheme("light")}><Sun size={16} /></button><button className={theme === "dark" ? "selected" : ""} aria-label="Dark theme" onClick={() => setTheme("dark")}><Moon size={16} /></button></div></div></article>
+        <article className="privacy-card"><span className="privacy-lock"><ShieldCheck size={19} /></span><h3>Your money is your business.</h3><p>Your financial information is personal. It’s kept private and is never sold.</p><a href="#privacy">Learn about privacy <ArrowRight size={14} /></a></article>
+      </aside>
+    </div>
+  </section>;
+}
+
+function Modal({ title, subtitle, onClose, children }) {
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-heading"><div className="modal-heading"><div><h2 id="modal-heading">{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div>{children}</section></div>;
+}
+
+function FormField({ label, error, children }) {
+  return <label className={`form-field ${error ? "has-error" : ""}`}><span>{label}</span>{children}{error && <small role="alert">{error}</small>}</label>;
+}
+
+function PanelHeading({ title, subtitle, children }) {
+  return <div className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div>{children}</div>;
+}
+
+function TransactionList({ transactions, currency }) {
+  return <div className="transaction-list">{transactions.length ? transactions.map((tx) => {
+    const Icon = iconByCategory[tx.category] || CircleDollarSign;
+    return <div className="transaction-list-row" key={tx.id}><span className={`category-icon ${tx.type === "income" ? "cat-income" : ""}`}><Icon size={16} /></span><div className="transaction-list-copy"><strong>{tx.title}</strong><span>{tx.category} <i /> {new Intl.DateTimeFormat("en", { day: "numeric", month: "short" }).format(new Date(`${tx.date}T00:00:00`))}</span></div><strong className={`list-amount ${tx.type === "income" ? "amount-income" : ""}`}>{tx.type === "income" ? "+" : "−"}{formatMoney(tx.amount, currency, true)}</strong></div>;
+  }) : <EmptyState icon={ArrowLeftRight} title="Nothing to see just yet" text="Add a transaction to get started." />}</div>;
+}
+
+function BudgetMini({ name, used, limit, currency }) {
+  const percent = Math.round(used / Math.max(limit, 1) * 100);
+  const over = used > limit;
+  return <div className={`budget-mini ${over ? "budget-mini-danger" : ""}`}><div className="budget-mini-top"><span>{name}</span><strong>{formatMoney(used, currency, true)} <small>of {formatMoney(limit, currency, true)}</small></strong></div><div className={`progress-track ${over ? "progress-danger" : used / Math.max(limit, 1) >= 0.8 ? "progress-warn" : ""}`}><span style={{ width: `${Math.min(100, percent)}%` }} /></div></div>;
+}
+
+function EmptyState({ icon: Icon = Package, title, text }) {
+  return <div className="empty-state"><span><Icon size={20} /></span><strong>{title}</strong><p>{text}</p></div>;
+}
+
+function ChartTooltip({ active, payload, label, currency }) {
+  if (!active || !payload?.length) return null;
+  return <div className="chart-tooltip"><strong>{label}</strong>{payload.map((item) => <span key={item.dataKey}><i style={{ backgroundColor: item.color }} />{item.name || item.dataKey}<b>{formatMoney(item.value, currency)}</b></span>)}</div>;
+}
+
+function getCategorySpend(transactions) {
+  const totals = new Map();
+  transactions.filter((tx) => tx.type === "expense").forEach((tx) => totals.set(tx.category, (totals.get(tx.category) || 0) + Number(tx.amount)));
+  return [...totals].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+}
+
+function getTrendData(transactions, count = 6) {
+  const now = new Date();
+  return Array.from({ length: count }, (_, index) => {
+    const date = new Date(now.getFullYear(), now.getMonth() - count + index + 1, 1);
+    const list = transactions.filter((tx) => {
+      const txDate = new Date(`${tx.date}T00:00:00`);
+      return txDate.getMonth() === date.getMonth() && txDate.getFullYear() === date.getFullYear();
+    });
+    const totals = summarizeTransactions(list);
+    const hasData = list.length > 0;
+    const fallbackIncome = [77000, 80500, 91000, 87000, 94000, 92000][index % 6];
+    const fallbackSpend = [52000, 48900, 57800, 55200, 63400, 60100][index % 6];
+    return { month: monthShort(date), income: hasData ? totals.income : fallbackIncome, expenses: hasData ? totals.expenses : fallbackSpend };
+  });
+}
+
+function compare(current, previous) {
+  if (!previous) return current ? 100 : 0;
+  return Math.round((current - previous) / previous * 100);
+}
+
+function compactMoney(value, currency = "INR") {
+  return new Intl.NumberFormat("en-IN", { style: "currency", currency, notation: "compact", maximumFractionDigits: 0 }).format(value);
+}
+
+function initials(name = "") {
+  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() || "").join("") || "FT";
+}
+
+function csvCell(value) {
+  const text = String(value).replaceAll('"', '""');
+  return /[",\r\n]/.test(text) ? `"${text}"` : text;
+}
+
+function downloadFile(content, filename, type) {
+  const url = URL.createObjectURL(new Blob([content], { type }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+export default App;
