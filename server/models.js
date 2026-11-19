@@ -5,14 +5,20 @@ const { Schema } = mongoose;
 const userSchema = new Schema({
   name: { type: String, required: true, trim: true, maxlength: 80 },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true, maxlength: 254 },
+  // New accounts must confirm that they control the email address before signing in.
+  emailVerified: { type: Boolean, default: false },
+  emailVerificationHash: { type: String, select: false },
+  emailVerificationExpires: { type: Date, select: false },
   passwordHash: { type: String, required: true, select: false },
   currency: { type: String, enum: ["INR", "USD", "EUR", "GBP", "CAD", "AUD"], default: "INR" },
+  openingBalance: { type: Number, min: -1_000_000_000, max: 1_000_000_000, default: 0 },
   theme: { type: String, enum: ["light", "dark"], default: "light" },
   avatarUrl: { type: String, default: "" },
   tokenVersion: { type: Number, default: 0 },
+  categoryVersion: { type: Number, default: 0 },
   categories: {
-    income: { type: [String], default: ["Salary", "Freelancing", "Investment", "Business"] },
-    expense: { type: [String], default: ["Food", "Travel", "Shopping", "Health", "Education", "Entertainment", "Bills"] },
+    income: { type: [String], default: [] },
+    expense: { type: [String], default: [] },
   },
   resetPasswordHash: { type: String, select: false },
   resetPasswordExpires: { type: Date, select: false },

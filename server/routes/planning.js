@@ -121,4 +121,14 @@ router.post("/goals/:id/contributions", async (req, res, next) => {
   }
 });
 
+router.delete("/goals/:id", async (req, res, next) => {
+  try {
+    const item = await Goal.findOneAndDelete({ _id: req.params.id, user: req.user.id });
+    if (!item) return res.status(404).json({ message: "Goal not found." });
+    return res.status(204).end();
+  } catch (error) {
+    return next(error);
+  }
+});
+
 export default router;

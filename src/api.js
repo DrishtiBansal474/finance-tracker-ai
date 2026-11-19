@@ -52,6 +52,7 @@ export async function loadAccountData() {
     goals: (goalResponse.data.items || []).map(normalizeGoal),
     categories: user.categories,
     currency: user.currency,
+    openingBalance: user.openingBalance,
     profile: { name: user.name, email: user.email },
     theme: user.theme,
   };

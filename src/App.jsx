@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { useForm } from "react-hook-form";
 import { useMutation } from "@tanstack/react-query";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Pie, PieChart,
+  Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, LineChart, Pie, PieChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 import {
@@ -16,9 +16,12 @@ import {
 } from "lucide-react";
 import { api, getApiError, loadAccountData } from "./api";
 import { getPasswordRequirements, isStrongPassword } from "../shared/password.js";
+import { useAuthStore, useFinanceStore } from "./store";
 import {
-  formatMoney, selectMonthlyTransactions, summarizeTransactions, useAuthStore, useFinanceStore,
-} from "./store";
+  calculateBalance, calculateSavings, calculateSavingsRate, compareToPreviousMonth, formatMoney,
+  formatPercent, getCategorySpend, getCategoryTotals, getMoneyFlow, getTrendData,
+  selectMonthlyTransactions, summarizeTransactions, verifyBalanceConsistency,
+} from "./utils/finance";
 
 const navItems = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
@@ -31,8 +34,9 @@ const navItems = [
 
 const expenseColors = ["#6e75e8", "#f4aa62", "#55b99b", "#ec7f8e", "#69a9d8", "#a68bd2", "#9aa5b2"];
 const iconByCategory = {
-  Food: Utensils, Travel: Plane, Shopping: ShoppingBag, Health: HeartPulse, Education: GraduationCap,
-  Entertainment: Gift, Bills: House, Salary: BriefcaseBusiness, Freelancing: Laptop, Investment: TrendingUp,
+  Food: Utensils, Travel: Plane, Rent: House, Shopping: ShoppingBag, Health: HeartPulse, Education: GraduationCap,
+  Entertainment: Gift, Gift, Bills: House, Salary: BriefcaseBusiness, Freelance: Laptop, Freelancing: Laptop,
+  Investment: TrendingUp, Other: CircleDollarSign,
   Business: BriefcaseBusiness,
 };
 const pageTitles = {
@@ -45,11 +49,11 @@ const pageTitles = {
   "/settings": ["Settings", "Make FinTrack work the way you do."],
 };
 
-const monthShort = (date) => new Intl.DateTimeFormat("en", { month: "short" }).format(date);
 const localDate = () => {
   const date = new Date();
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
 };
+const isPlausibleEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value);
 
 function App() {
   const { theme, setTheme } = useFinanceStore();
@@ -57,6 +61,7 @@ function App() {
     <div className={`app-root theme-${theme}`}>
       <Routes>
         <Route path="/login" element={<AuthPage />} />
+        <Route path="/verify-email/:token" element={<VerifyEmailPage />} />
         <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
         <Route element={<ProtectedRoute />}>
           <Route element={<AppShell />}>
@@ -102,11 +107,22 @@ function AuthPage() {
         return;
       }
       const { data } = await api.post(registering ? "/auth/register" : "/auth/login", { name, email, password });
+      if (registering) {
+        setFeedback(data.message);
+        return;
+      }
       signIn(data.user);
       navigate(redirect, { replace: true });
     } catch (error) {
       setFeedback(getApiError(error));
     }
+  };
+  const resendVerification = async () => {
+    setFeedback("");
+    try {
+      const { data } = await api.post("/auth/resend-verification", { email: form.getValues("email") });
+      setFeedback(data.message);
+    } catch (error) { setFeedback(getApiError(error)); }
   };
 
   return (
@@ -119,10 +135,9 @@ function AuthPage() {
           <p>One calm place to see where it goes, grow what stays, and plan what’s next.</p>
         </div>
         <div className="auth-mini-card">
-          <div className="mini-card-top"><span>Monthly savings</span><TrendingUp size={16} /></div>
-          <strong>₹24,580</strong>
-          <span className="mini-positive">↑ 12.8% <span>vs. last month</span></span>
-          <div className="mini-bars">{[36, 54, 42, 75, 58, 88, 70, 96, 68, 84, 74, 100].map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div>
+          <div className="mini-card-top"><span>Your money, in focus</span><TrendingUp size={16} /></div>
+          <strong>One clear view</strong>
+          <span className="mini-positive">Every transaction, accounted for</span>
         </div>
         <p className="auth-quote">“It’s not about having more. It’s about making more of what you have.”</p>
       </section>
@@ -135,8 +150,8 @@ function AuthPage() {
             <p>{resetMode ? "Enter the email linked to your account." : registering ? "A better relationship with money starts here." : "Your money dashboard is right where you left it."}</p>
           </div>
           <form className="auth-form" onSubmit={form.handleSubmit(onSubmit)}>
-            {registering && !resetMode && <FormField label="Your name" error={form.formState.errors.name?.message}><input placeholder="Your name" {...form.register("name", { required: "Please enter your name" })} /></FormField>}
-            <FormField label="Email address" error={form.formState.errors.email?.message}><input type="email" placeholder="you@example.com" autoComplete="email" {...form.register("email", { required: "Enter a valid email address" })} /></FormField>
+            {registering && !resetMode && <FormField label="Your name" error={form.formState.errors.name?.message}><input placeholder="Your name" {...form.register("name", { required: "Please enter your name", minLength: { value: 2, message: "Use at least 2 characters" }, maxLength: { value: 80, message: "Use at most 80 characters" } })} /></FormField>}
+            <FormField label="Email address" error={form.formState.errors.email?.message}><input type="email" placeholder="you@example.com" autoComplete="email" {...form.register("email", { required: "Enter your email address", validate: (email) => isPlausibleEmail(email.trim()) || "Enter a valid email address" })} /></FormField>
             {!resetMode && <FormField label="Password" error={form.formState.errors.password?.message}><input type="password" placeholder={registering ? "Create a strong password" : "Your password"} autoComplete={registering ? "new-password" : "current-password"} {...form.register("password", { required: "Enter your password", ...(registering ? { minLength: { value: 8, message: "Use at least 8 characters" }, validate: (password) => isStrongPassword(password) || "Use 8–72 characters with uppercase and lowercase letters, a number, and a symbol." } : {}) })} />{registering && <PasswordRequirements password={form.watch("password")} />}</FormField>}
             {(feedback || authError) && <p className="form-feedback" role="status">{feedback || authError}</p>}
             {!registering && !resetMode && <button className="text-button forgot-button" type="button" onClick={() => { setResetMode(true); setFeedback(""); }}>Forgot password?</button>}
@@ -145,13 +160,36 @@ function AuthPage() {
           {resetMode ? <p className="auth-switch"><button type="button" onClick={() => { setResetMode(false); setFeedback(""); }}>Back to sign in</button></p> : (
             <p className="auth-switch">{registering ? "Already have an account?" : "New to FinTrack?"} <button type="button" onClick={() => { setRegistering(!registering); setFeedback(""); }}> {registering ? "Sign in" : "Create an account"}</button></p>
           )}
-          <div className="auth-divider"><span /> <small>OR TRY A SAMPLE ACCOUNT</small> <span /></div>
-          <button type="button" className="button button-secondary demo-button" onClick={() => { signInDemo(); navigate("/", { replace: true }); }}>Explore the demo <ArrowRight size={16} /></button>
+          {!resetMode && <p className="auth-switch"><button type="button" onClick={resendVerification}>Resend email verification</button></p>}
+          <div className="auth-divider"><span /> <small>OR START WITH A BLANK WORKSPACE</small> <span /></div>
+          <button type="button" className="button button-secondary demo-button" onClick={() => { signInDemo(); navigate("/", { replace: true }); }}>Try a blank workspace <ArrowRight size={16} /></button>
           <p className="auth-terms">By continuing, you agree to our <a href="#terms">Terms</a> and <a href="#privacy">Privacy Policy</a>.</p>
         </div>
       </section>
     </main>
   );
+}
+
+function VerifyEmailPage() {
+  const { token } = useParams();
+  const navigate = useNavigate();
+  const [feedback, setFeedback] = useState("Verifying your email…");
+  const [failed, setFailed] = useState(false);
+  const attempted = useRef(false);
+  useEffect(() => {
+    if (attempted.current) return undefined;
+    attempted.current = true;
+    let active = true;
+    api.post("/auth/verify-email", { token })
+      .then(({ data }) => { if (active) setFeedback(data.message); })
+      .catch((error) => { if (active) { setFailed(true); setFeedback(getApiError(error)); } });
+    return () => { active = false; };
+  }, [token]);
+  return <main className="auth-page reset-page"><section className="auth-form-panel"><div className="auth-form-wrap">
+    <div className="auth-form-mobile-brand"><BrandMark /></div>
+    <div className="auth-form-heading"><p className="eyebrow">EMAIL CONFIRMATION</p><h2>{failed ? "We couldn’t verify that link" : "Your email is verified"}</h2><p>{feedback}</p></div>
+    <button className="button button-primary auth-submit" type="button" onClick={() => navigate("/login", { replace: true })}>{failed ? "Back to sign in" : "Sign in"}</button>
+  </div></section></main>;
 }
 
 function ResetPasswordPage() {
@@ -195,7 +233,7 @@ function BrandMark({ compact = false }) {
 }
 
 function AppShell() {
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [alertsOpen, setAlertsOpen] = useState(false);
   const [dataLoading, setDataLoading] = useState(useAuthStore.getState().mode === "api");
   const [dataLoadError, setDataLoadError] = useState("");
@@ -239,12 +277,12 @@ function AppShell() {
   const alerts = [
     ...budgets.flatMap((budget) => {
       const spent = currentTransactions.filter((tx) => tx.type === "expense" && tx.category === budget.category).reduce((sum, tx) => sum + Number(tx.amount), 0);
-      const percent = Math.round(spent / budget.limit * 100);
+      const percent = spent / budget.limit * 100;
       if (spent / budget.limit < 0.8) return [];
       const over = spent > budget.limit;
       return [{
         id: budget.id,
-        title: over ? `${budget.category} is over budget` : `${budget.category} is at ${percent}%`,
+        title: over ? `${budget.category} is over budget` : `${budget.category} is at ${formatPercent(percent)}`,
         detail: over ? `${formatMoney(spent - budget.limit, currency)} over this month’s limit.` : spent === budget.limit ? "You’ve reached this month’s limit." : "You’re getting close to this month’s limit.",
         tone: over ? "danger" : "warning",
       }];
@@ -257,13 +295,13 @@ function AppShell() {
 
   return (
     <div className="shell">
-      {mobileOpen && <button className="mobile-backdrop" aria-label="Close navigation" onClick={() => setMobileOpen(false)} />}
-      <aside className={`sidebar ${mobileOpen ? "sidebar-open" : ""}`}>
-        <div className="sidebar-brand"><BrandMark compact /><button className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label="Close menu"><X size={18} /></button></div>
+      {sidebarOpen && <button className="mobile-backdrop" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
+      <aside className={`sidebar ${sidebarOpen ? "sidebar-open" : ""}`}>
+        <div className="sidebar-brand"><BrandMark compact /><button className="icon-button mobile-close" onClick={() => setSidebarOpen(false)} aria-label="Close menu"><X size={18} /></button></div>
         <div className="workspace-label">YOUR WORKSPACE</div>
         <nav className="side-nav" aria-label="Main navigation">
           {navItems.map(({ to, label, icon: Icon, end, badge }) => (
-            <NavLink key={to} to={to} end={end} onClick={() => setMobileOpen(false)} className={({ isActive }) => `nav-link ${isActive ? "nav-link-active" : ""}`}>
+            <NavLink key={to} to={to} end={end} onClick={() => setSidebarOpen(false)} className={({ isActive }) => `nav-link ${isActive ? "nav-link-active" : ""}`}>
               <Icon size={18} strokeWidth={1.8} /><span>{label}</span>{badge && <small>{badge}</small>}
             </NavLink>
           ))}
@@ -278,7 +316,7 @@ function AppShell() {
       </aside>
       <div className="main-column">
         <header className="topbar">
-          <button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="Open menu"><Menu size={20} /></button>
+          <button className="icon-button sidebar-toggle" onClick={() => setSidebarOpen((open) => !open)} aria-label={sidebarOpen ? "Close navigation" : "Open navigation"} aria-expanded={sidebarOpen}><Menu size={20} /></button>
           <div className="breadcrumbs"><span>Workspace</span><ChevronRight size={14} /><strong>{location.pathname === "/" ? "Overview" : page[0]}</strong></div>
           <div className="topbar-actions">
             <div className="top-date"><CalendarDays size={15} />{new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" }).format(new Date())}</div>
@@ -302,44 +340,65 @@ function AppShell() {
 }
 
 function Dashboard() {
-  const { transactions, budgets, goals, currency } = useFinanceStore();
+  const { transactions, budgets, goals, currency, openingBalance, categories: transactionCategories, setOpeningBalance, addTransaction, updateTransaction, deleteTransaction } = useFinanceStore();
+  const [balanceDialogOpen, setBalanceDialogOpen] = useState(false);
+  const [transactionDialog, setTransactionDialog] = useState(null);
   const monthTx = selectMonthlyTransactions(transactions);
   const previousMonth = selectMonthlyTransactions(transactions, new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1));
   const thisTotals = summarizeTransactions(monthTx);
   const lastTotals = summarizeTransactions(previousMonth);
-  const overall = summarizeTransactions(transactions);
-  const balance = overall.income - overall.expenses;
-  const savings = thisTotals.income - thisTotals.expenses;
-  const savingRate = thisTotals.income ? Math.max(0, Math.round(savings / thisTotals.income * 100)) : 0;
+  const allTotals = summarizeTransactions(transactions);
+  const balance = calculateBalance(openingBalance, transactions);
+  const savings = calculateSavings(thisTotals.income, thisTotals.expenses);
+  const savingRate = calculateSavingsRate(thisTotals.income, thisTotals.expenses);
+  const moneyFlow = getMoneyFlow(thisTotals.income, thisTotals.expenses);
   const categories = getCategorySpend(monthTx);
+  const incomeCategories = getCategoryTotals(monthTx, "income");
   const trend = getTrendData(transactions);
   const recent = [...transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 5);
-  const spendingDiff = lastTotals.expenses ? Math.round((thisTotals.expenses - lastTotals.expenses) / lastTotals.expenses * 100) : null;
+  const incomeDiff = compareToPreviousMonth(thisTotals.income, lastTotals.income, previousMonth.length);
+  const spendingDiff = compareToPreviousMonth(thisTotals.expenses, lastTotals.expenses, previousMonth.length);
+  verifyBalanceConsistency(allTotals.income, allTotals.expenses, balance, openingBalance);
+
+  const updateBalance = async (value) => {
+    const saved = await setOpeningBalance(Number(value));
+    if (saved) setBalanceDialogOpen(false);
+    return saved;
+  };
+  const saveTransaction = async (values) => {
+    const transaction = { ...values, amount: Number(values.amount) };
+    const saved = transactionDialog?.transaction
+      ? await updateTransaction(transactionDialog.transaction.id, transaction)
+      : await addTransaction(transaction);
+    if (saved) setTransactionDialog(null);
+    return saved;
+  };
 
   return <div className="dashboard-page">
     <section className="stats-grid">
-      <StatCard label="Total balance" value={formatMoney(balance, currency, true)} icon={Wallet} tone="violet" helper="Across all accounts" trend={7.8} />
-      <StatCard label="Income this month" value={formatMoney(thisTotals.income, currency, true)} icon={ArrowDownLeft} tone="green" helper="Compared to last month" trend={compare(thisTotals.income, lastTotals.income)} />
-      <StatCard label="Spent this month" value={formatMoney(thisTotals.expenses, currency, true)} icon={ArrowUpRight} tone="orange" helper="Compared to last month" trend={spendingDiff} reverse />
-      <StatCard label="Saved this month" value={formatMoney(savings, currency, true)} icon={CircleDollarSign} tone="blue" helper={`${savingRate}% of this month’s income`} trend={null} />
+      <SummaryCard label="Total balance" value={formatMoney(balance, currency)} icon={Wallet} tone="violet" helper={savingRate === null ? "— of income left" : `${formatPercent(savingRate)} of income left`} actionLabel="Set opening balance" actionText="Set opening balance" onAction={() => setBalanceDialogOpen(true)} />
+      <SummaryCard label="Income this month" value={formatMoney(thisTotals.income, currency)} icon={ArrowDownLeft} tone="green" helper="Compared to last month" trend={incomeDiff} showTrend details={incomeCategories} currency={currency} actionLabel="Add income" actionText="Add income" onAction={() => setTransactionDialog({ type: "income" })} />
+      <SummaryCard label="Spent this month" value={formatMoney(thisTotals.expenses, currency)} icon={ArrowUpRight} tone="orange" helper={moneyFlow.spentPercent === null ? "— of income" : `${formatPercent(moneyFlow.spentPercent)} of income`} trend={spendingDiff} showTrend reverse />
+      <SummaryCard label="Saved this month" value={formatMoney(savings, currency)} icon={CircleDollarSign} tone="blue" helper={savingRate === null ? "—" : `${formatPercent(savingRate)} of this month’s income`} />
     </section>
 
+    <MoneyFlowBar income={thisTotals.income} expenses={thisTotals.expenses} flow={moneyFlow} currency={currency} />
     <section className="dashboard-grid">
       <article className="panel trend-panel">
         <PanelHeading title="Cash flow" subtitle="Your income and spending over time">
           <span className="period-pill"><span /> Last 6 months <ChevronDown size={14} /></span>
         </PanelHeading>
         <div className="chart-legend"><span><i className="legend-dot income-dot" />Income</span><span><i className="legend-dot expense-dot" />Expenses</span></div>
-        <div className="chart-large"><ResponsiveContainer width="100%" height="100%"><AreaChart data={trend} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}><defs><linearGradient id="incomeFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#52b89b" stopOpacity={0.18} /><stop offset="95%" stopColor="#52b89b" stopOpacity={0} /></linearGradient><linearGradient id="expenseFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#8783ec" stopOpacity={0.17} /><stop offset="95%" stopColor="#8783ec" stopOpacity={0} /></linearGradient></defs><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="4 5" /><XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 11 }} dy={10} /><YAxis axisLine={false} tickLine={false} tickFormatter={(value) => compactMoney(value, currency)} tick={{ fill: "var(--muted)", fontSize: 10 }} /><Tooltip content={<ChartTooltip currency={currency} />} /><Area type="monotone" dataKey="income" name="Income" stroke="#55b99b" strokeWidth={2.5} fill="url(#incomeFill)" activeDot={{ r: 5 }} /><Area type="monotone" dataKey="expenses" name="Expenses" stroke="#8783ec" strokeWidth={2.5} fill="url(#expenseFill)" activeDot={{ r: 5 }} /></AreaChart></ResponsiveContainer></div>
+        <div className="chart-large"><ResponsiveContainer width="100%" height="100%"><LineChart data={trend} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="4 5" /><XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 11 }} dy={10} /><YAxis axisLine={false} tickLine={false} tickFormatter={(value) => formatMoney(value, currency)} tick={{ fill: "var(--muted)", fontSize: 10 }} /><Tooltip content={<ChartTooltip currency={currency} />} /><Line type="monotone" dataKey="income" name="Income" stroke="#55b99b" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} /><Line type="monotone" dataKey="expenses" name="Expenses" stroke="#8783ec" strokeWidth={2.5} dot={false} activeDot={{ r: 5 }} /></LineChart></ResponsiveContainer></div>
         <div className="chart-footnote"><span><span className="footnote-line" /> A steady month is a good month.</span><Link to="/reports">See trends <ArrowRight size={13} /></Link></div>
       </article>
       <article className="panel spending-panel">
         <PanelHeading title="Where it goes" subtitle="Spending by category this month"><button className="icon-button small-icon" aria-label="More category options"><MoreHorizontal size={19} /></button></PanelHeading>
-        {categories.length ? <><div className="pie-area"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={categories} dataKey="value" nameKey="name" innerRadius="66%" outerRadius="91%" paddingAngle={4} stroke="none">{categories.map((entry, index) => <Cell key={entry.name} fill={expenseColors[index % expenseColors.length]} />)}</Pie><Tooltip content={<ChartTooltip currency={currency} />} /></PieChart></ResponsiveContainer><div className="pie-center"><span>Total spent</span><strong>{formatMoney(thisTotals.expenses, currency, true)}</strong><small>this month</small></div></div><div className="category-legend">{categories.slice(0, 4).map((item, index) => <div key={item.name} className="category-legend-row"><span><i style={{ background: expenseColors[index % expenseColors.length] }} />{item.name}</span><strong>{Math.round(item.value / Math.max(thisTotals.expenses, 1) * 100)}%</strong></div>)}</div></> : <EmptyState icon={PieChart} title="Nothing to chart yet" text="Add a few expenses to see your spending breakdown." />}
+        {categories.length ? <><div className="pie-area"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={categories} dataKey="value" nameKey="name" innerRadius="66%" outerRadius="91%" paddingAngle={4} stroke="none">{categories.map((entry, index) => <Cell key={entry.name} fill={expenseColors[index % expenseColors.length]} />)}</Pie><Tooltip content={<ChartTooltip currency={currency} />} /></PieChart></ResponsiveContainer><div className="pie-center"><span>Total spent</span><strong>{formatMoney(thisTotals.expenses, currency)}</strong><small>this month</small></div></div><div className="category-legend">{categories.map((item, index) => <div key={item.name} className="category-legend-row"><span><i style={{ background: expenseColors[index % expenseColors.length] }} />{item.name}</span><span className="category-legend-value"><strong>{formatMoney(item.value, currency)}</strong><small>{formatPercent((item.value / thisTotals.expenses) * 100)}</small></span></div>)}</div></> : <EmptyState icon={PieChart} title="Nothing to chart yet" text="Add a few expenses to see your spending breakdown." />}
       </article>
       <article className="panel recent-panel">
         <PanelHeading title="Recent transactions" subtitle="The latest activity on your account"><Link to="/transactions" className="panel-link">See all <ArrowRight size={14} /></Link></PanelHeading>
-        <TransactionList transactions={recent} currency={currency} />
+        <TransactionList transactions={recent} currency={currency} onEdit={(transaction) => setTransactionDialog({ transaction })} onDelete={(transaction) => { if (window.confirm(`Delete "${transaction.title}"? This can’t be undone.`)) deleteTransaction(transaction.id); }} />
       </article>
       <article className="panel savings-panel">
         <PanelHeading title="Savings goals" subtitle="Little by little adds up"><Link to="/goals" className="panel-link">All goals <ArrowRight size={14} /></Link></PanelHeading>
@@ -355,15 +414,31 @@ function Dashboard() {
         {!budgets.length && <EmptyState icon={Gauge} title="No budgets yet" text="Create a monthly plan to see your progress here." />}
       </article>
       <article className="insight-card">
-        <div className="insight-spark"><Sparkles size={18} /></div><div><span className="insight-kicker">A LITTLE INSIGHT FOR YOU</span><p>{spendingDiff !== null && spendingDiff > 0 ? `Your spending is up ${spendingDiff}% this month. A quick look at dining could help bring it back in balance.` : "You’ve saved consistently this month. Keep it up and your goals will be closer than they look."}</p><Link to="/insights">Explore your insights <ArrowRight size={14} /></Link></div><div className="insight-orb" />
+        <div className="insight-spark"><Sparkles size={18} /></div><div><span className="insight-kicker">A LITTLE INSIGHT FOR YOU</span><p>{spendingDiff !== null && spendingDiff > 0 ? `Your spending is up ${formatPercent(spendingDiff)} this month. A quick look at dining could help bring it back in balance.` : "You’ve saved consistently this month. Keep it up and your goals will be closer than they look."}</p><Link to="/insights">Explore your insights <ArrowRight size={14} /></Link></div><div className="insight-orb" />
       </article>
     </section>
+    {balanceDialogOpen && <BalanceUpdateDialog openingBalance={openingBalance} currency={currency} onClose={() => setBalanceDialogOpen(false)} onSave={updateBalance} />}
+    {transactionDialog && <TransactionModal transaction={transactionDialog.transaction} defaultType={transactionDialog.type || "expense"} categories={transactionCategories} onClose={() => setTransactionDialog(null)} onSave={saveTransaction} />}
   </div>;
 }
 
-function StatCard({ label, value, icon: Icon, tone, helper, trend, reverse = false }) {
+function SummaryCard({ label, value, icon: Icon, tone, helper, trend, reverse = false, showTrend = false, details, currency = "INR", actionLabel, actionText, onAction }) {
   const positive = reverse ? Number(trend) <= 0 : Number(trend) >= 0;
-  return <article className="stat-card"><div className="stat-top"><span>{label}</span><span className={`stat-icon ${tone}`}><Icon size={18} /></span></div><strong className="stat-value">{value}</strong><div className="stat-bottom"><span>{helper}</span>{trend !== null && trend !== undefined && <span className={`stat-trend ${positive ? "trend-positive" : "trend-negative"}`}>{Number(trend) >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}{Math.abs(Number(trend))}%</span>}</div></article>;
+  return <article className="stat-card"><div className="stat-top"><span>{label}</span>{onAction ? <button type="button" className={`stat-action ${tone}`} onClick={onAction} aria-label={actionLabel} title={actionLabel}>{actionLabel === "Add income" ? <Plus size={14} /> : <Pencil size={13} />}{actionText}</button> : <span className={`stat-icon ${tone}`}><Icon size={18} /></span>}</div><strong className="stat-value">{value}</strong>{details && <div className="stat-breakdown">{details.length ? details.map((item) => <div key={item.name}><span>{item.name}</span><strong>{formatMoney(item.value, currency)}</strong></div>) : <span className="stat-breakdown-empty">No income categories yet</span>}</div>}<div className="stat-bottom"><span>{helper}</span>{showTrend && <span className={`stat-trend ${trend === null ? "" : positive ? "trend-positive" : "trend-negative"}`}>{trend === null ? "—" : <>{Number(trend) >= 0 ? <TrendingUp size={13} /> : <TrendingDown size={13} />}{formatPercent(Math.abs(Number(trend)))}</>}</span>}</div></article>;
+}
+
+function MoneyFlowBar({ income, expenses, flow, currency }) {
+  return <section className="panel money-flow-panel" aria-label="Monthly money flow">
+    <div className="money-flow-heading"><div><h2>Money flow</h2><p>Income {formatMoney(income, currency)} this month</p></div></div>
+    <div className="money-flow-track" role="img" aria-label={`Spent ${formatMoney(expenses, currency)}, remaining ${formatMoney(flow.remaining, currency)}`}>
+      <span className="money-flow-spent" style={{ width: `${flow.spentWidth}%` }} />
+      <span className="money-flow-remaining" style={{ width: `${flow.remainingWidth}%` }} />
+    </div>
+    <div className="money-flow-details">
+      <div><span><i className="money-flow-spent-dot" />Spent</span><strong>{formatMoney(expenses, currency)} <small>{formatPercent(flow.spentPercent)}</small></strong></div>
+      <div><span><i className="money-flow-remaining-dot" />Remaining</span><strong>{formatMoney(flow.remaining, currency)} <small>{formatPercent(flow.remainingPercent)}</small></strong></div>
+    </div>
+  </section>;
 }
 
 function TransactionsPage() {
@@ -376,6 +451,11 @@ function TransactionsPage() {
   const [page, setPage] = useState(1);
   const location = useLocation();
   const pageSize = 8;
+  const transactionCategories = [...new Set([
+    ...categories.income,
+    ...categories.expense,
+    ...transactions.map((transaction) => transaction.category),
+  ])];
 
   useEffect(() => {
     if (new URLSearchParams(location.search).get("new") === "1") setDialog({ mode: "create" });
@@ -393,10 +473,11 @@ function TransactionsPage() {
       ? await updateTransaction(dialog.transaction.id, { ...values, amount: Number(values.amount) })
       : await addTransaction({ ...values, amount: Number(values.amount) });
     if (saved) setDialog(null);
+    return saved;
   };
 
   return <section className="page-section">
-    <div className="list-toolbar"><div className="search-field"><Search size={17} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Search transactions..." aria-label="Search transactions" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={14} /></button>}</div><div className="toolbar-filters"><label className="select-wrap"><Filter size={15} /><select value={typeFilter} onChange={(event) => { setTypeFilter(event.target.value); setPage(1); }} aria-label="Filter by transaction type"><option value="all">All types</option><option value="income">Income</option><option value="expense">Expense</option></select></label><label className="select-wrap"><select value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value); setPage(1); }} aria-label="Filter by category"><option value="all">All categories</option>{[...categories.income, ...categories.expense].map((cat) => <option key={cat} value={cat}>{cat}</option>)}</select></label><button className="button button-primary" onClick={() => setDialog({ mode: "create" })}><Plus size={16} /> Add transaction</button></div></div>
+    <div className="list-toolbar"><div className="search-field"><Search size={17} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} placeholder="Search transactions..." aria-label="Search transactions" />{search && <button onClick={() => setSearch("")} aria-label="Clear search"><X size={14} /></button>}</div><div className="toolbar-filters"><label className="select-wrap"><Filter size={15} /><select value={typeFilter} onChange={(event) => { setTypeFilter(event.target.value); setPage(1); }} aria-label="Filter by transaction type"><option value="all">All types</option><option value="income">Income</option><option value="expense">Expense</option></select></label><label className="select-wrap"><select value={categoryFilter} onChange={(event) => { setCategoryFilter(event.target.value); setPage(1); }} aria-label="Filter by category"><option value="all">All categories</option>{transactionCategories.map((cat) => <option key={cat} value={cat}>{cat}</option>)}</select></label><button className="button button-primary" onClick={() => setDialog({ mode: "create" })}><Plus size={16} /> Add transaction</button></div></div>
     <div className="table-card"><div className="table-card-heading"><div><strong>All transactions</strong><span>{filtered.length} {filtered.length === 1 ? "entry" : "entries"}</span></div><label className="sort-select">Sort by <select value={sort} onChange={(event) => setSort(event.target.value)}><option value="date-desc">Newest first</option><option value="date-asc">Oldest first</option><option value="amount-desc">Largest amount</option></select><ChevronDown size={13} /></label></div>
       <div className="table-scroll"><table className="data-table"><thead><tr><th>TRANSACTION</th><th>CATEGORY</th><th>DATE</th><th>AMOUNT</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>
         {shown.map((tx) => <TransactionRow key={tx.id} tx={tx} currency={currency} onEdit={() => setDialog({ mode: "edit", transaction: tx })} onDelete={() => { if (window.confirm(`Delete "${tx.title}"? This can’t be undone.`)) deleteTransaction(tx.id); }} />)}
@@ -404,31 +485,49 @@ function TransactionsPage() {
       {!shown.length && <EmptyState icon={Search} title="No matches found" text={transactions.length ? "Try another search or change your filters." : "Your transactions will show up here once you add one."} />}
       <div className="table-pagination"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div><button className="icon-button small-icon" disabled={page <= 1} onClick={() => setPage(page - 1)} aria-label="Previous page"><ChevronLeft size={17} /></button><span className="page-number">{page} / {Math.max(pages, 1)}</span><button className="icon-button small-icon" disabled={page >= pages} onClick={() => setPage(page + 1)} aria-label="Next page"><ChevronRight size={17} /></button></div></div>
     </div>
-    {dialog && <TransactionDialog transaction={dialog.transaction} categories={categories} onClose={() => setDialog(null)} onSave={save} />}
+    {dialog && <TransactionModal transaction={dialog.transaction} categories={categories} onClose={() => setDialog(null)} onSave={save} />}
   </section>;
 }
 
-function TransactionDialog({ transaction, categories, onClose, onSave }) {
-  const form = useForm({ defaultValues: transaction || { title: "", amount: "", type: "expense", category: "Food", date: localDate(), notes: "" } });
-  const [newCategory, setNewCategory] = useState("");
-  const addCategory = useFinanceStore((state) => state.addCategory);
+function TransactionModal({ transaction, categories, onClose, onSave, defaultType = "expense" }) {
+  const defaultValues = transaction || { title: "", amount: "", type: defaultType, category: "", date: localDate(), notes: "" };
+  const form = useForm({ defaultValues, mode: "onChange", shouldUnregister: true });
   const selectedType = form.watch("type");
-  const options = categories[selectedType] || [];
-  const submit = (values) => onSave({ ...values, amount: Number(values.amount), category: values.category || options[0] });
-  const saveCategory = async () => {
-    const cleaned = newCategory.trim();
-    if (!cleaned || !(await addCategory(selectedType, cleaned))) return;
-    form.setValue("category", cleaned);
-    setNewCategory("");
+  const submit = async (values) => {
+    const category = selectedType === "income" ? "Income" : "Uncategorized";
+    const saved = await onSave({ ...values, category, amount: Number(values.amount) });
+    if (saved) form.reset(defaultValues);
   };
   return <Modal title={transaction ? "Edit transaction" : "Add a transaction"} subtitle="A clear picture starts with the little things." onClose={onClose}>
     <form className="dialog-form" onSubmit={form.handleSubmit(submit)}>
-      <FormField label="What was it for?" error={form.formState.errors.title?.message}><input placeholder="e.g. Weekly groceries" autoFocus {...form.register("title", { required: "Give this transaction a name" })} /></FormField>
-      <div className="form-row"><FormField label="Amount" error={form.formState.errors.amount?.message}><div className="input-prefix"><span>₹</span><input type="number" step="0.01" min="0.01" placeholder="0.00" {...form.register("amount", { required: "Enter an amount", min: { value: 0.01, message: "Amount should be greater than zero" } })} /></div></FormField><FormField label="Type"><select {...form.register("type", { onChange: () => form.setValue("category", "") })}><option value="expense">Expense</option><option value="income">Income</option></select></FormField></div>
-      <div className="form-row"><FormField label="Category"><select {...form.register("category")}>{options.map((category) => <option key={category} value={category}>{category}</option>)}</select></FormField><FormField label="Date"><input type="date" max={localDate()} {...form.register("date", { required: "Choose a date" })} /></FormField></div>
-      <div className="add-category-inline"><input value={newCategory} onChange={(event) => setNewCategory(event.target.value)} placeholder="Add a category" onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveCategory(); } }} /><button type="button" onClick={saveCategory}>+ Category</button></div>
-      <FormField label="Notes (optional)"><textarea rows="2" placeholder="Add a little context..." {...form.register("notes")} /></FormField>
-      <div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary">{transaction ? "Save changes" : "Add transaction"}</button></div>
+      <FormField label={selectedType === "income" ? "Where did this income come from?" : "What was it for?"} error={form.formState.errors.title?.message}><input placeholder={selectedType === "income" ? "e.g. Monthly salary" : "e.g. Weekly groceries"} autoFocus {...form.register("title", { required: selectedType === "income" ? "Enter an income source" : "Give this expense a name" })} /></FormField>
+      <div className="form-row"><FormField label="Amount" error={form.formState.errors.amount?.message}><div className="input-prefix"><span>₹</span><input type="number" step="0.01" min="0.01" placeholder="0.00" {...form.register("amount", { required: "Enter an amount", valueAsNumber: true, min: { value: 0.01, message: "Amount should be greater than zero" } })} /></div></FormField><FormField label="Type"><select {...form.register("type")}><option value="expense">Expense</option><option value="income">Income</option></select></FormField></div>
+      <FormField label="Date"><input type="date" max={localDate()} {...form.register("date", { required: "Choose a date" })} /></FormField>
+      <FormField label="Notes (optional)"><textarea rows="2" placeholder={selectedType === "income" ? "e.g. November salary" : "Add a little context..."} {...form.register("notes")} /></FormField>
+      <div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary" disabled={!form.formState.isValid || form.formState.isSubmitting}>{form.formState.isSubmitting ? "Saving..." : transaction ? "Save changes" : "Add transaction"}</button></div>
+    </form>
+  </Modal>;
+}
+
+function BalanceUpdateDialog({ openingBalance, currency, onClose, onSave }) {
+  const form = useForm({ defaultValues: { openingBalance } });
+  const currencySymbol = new Intl.NumberFormat("en", { style: "currency", currency, currencyDisplay: "narrowSymbol" })
+    .formatToParts(0).find((part) => part.type === "currency")?.value || currency;
+  const submit = async ({ openingBalance: value }) => {
+    await onSave(Number(value));
+  };
+
+  return <Modal title="Set opening balance" subtitle="Your total balance will include this amount plus recorded income and expenses." onClose={onClose}>
+    <form className="dialog-form" onSubmit={form.handleSubmit(submit)}>
+      <FormField label="Opening balance" error={form.formState.errors.openingBalance?.message}>
+        <div className="input-prefix"><span>{currencySymbol}</span><input type="number" step="0.01" min="-1000000000" max="1000000000" autoFocus {...form.register("openingBalance", {
+          required: "Enter your opening balance",
+          valueAsNumber: true,
+          min: { value: -1_000_000_000, message: "Balance must be at least -1,000,000,000" },
+          max: { value: 1_000_000_000, message: "Balance must be at most 1,000,000,000" },
+        })} /></div>
+      </FormField>
+      <div className="dialog-actions"><button type="button" className="button button-quiet" onClick={onClose}>Cancel</button><button type="submit" className="button button-primary">Save balance</button></div>
     </form>
   </Modal>;
 }
@@ -439,23 +538,28 @@ function TransactionRow({ tx, currency, onEdit, onDelete }) {
 }
 
 function BudgetsPage() {
-  const { budgets, transactions, currency, addBudget, categories } = useFinanceStore();
+  const { budgets, transactions, currency, addBudget, addCategory, categories } = useFinanceStore();
   const [showForm, setShowForm] = useState(false);
   const [message, setMessage] = useState("");
   const monthTx = selectMonthlyTransactions(transactions);
-  const form = useForm({ defaultValues: { category: categories.expense[0], limit: "" } });
+  const form = useForm({ defaultValues: { category: "", limit: "" }, mode: "onChange" });
   const submit = async (values) => {
-    const saved = await addBudget({ ...values, limit: Number(values.limit) });
+    const enteredCategory = String(values.category || "").trim();
+    if (!enteredCategory) return;
+    const category = categories.expense.find((item) => item.toLowerCase() === enteredCategory.toLowerCase()) || enteredCategory;
+    if (!categories.expense.some((item) => item.toLowerCase() === category.toLowerCase())
+      && !(await addCategory("expense", category))) return;
+    const saved = await addBudget({ ...values, category, limit: Number(values.limit) });
     if (!saved) return;
     setShowForm(false);
-    setMessage(`${values.category} budget saved.`);
-    form.reset({ category: categories.expense[0], limit: "" });
+    setMessage(`${category} budget saved.`);
+    form.reset({ category: "", limit: "" });
     window.setTimeout(() => setMessage(""), 3000);
   };
   return <section className="page-section">
     <div className="section-intro-row"><div><div className="month-label"><CalendarDays size={15} /> {new Intl.DateTimeFormat("en", { month: "long", year: "numeric" }).format(new Date())}</div><p className="section-intro">A budget isn’t a restriction. It’s permission to spend on what matters.</p></div><button className="button button-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> Create a budget</button></div>
     {message && <div className="success-message"><Check size={16} />{message}</div>}
-    {showForm && <form className="inline-create-card" onSubmit={form.handleSubmit(submit)}><div className="inline-form-title"><span className="stat-icon violet"><Gauge size={17} /></span><div><strong>Plan your monthly limit</strong><p>Choose a category and set a comfortable amount.</p></div><button type="button" className="icon-button small-icon" onClick={() => setShowForm(false)} aria-label="Close form"><X size={17} /></button></div><div className="form-row"><FormField label="Category" error={form.formState.errors.category?.message}><select {...form.register("category", { required: true })}>{categories.expense.map((category) => <option key={category}>{category}</option>)}</select></FormField><FormField label="Monthly limit" error={form.formState.errors.limit?.message}><div className="input-prefix"><span>₹</span><input type="number" min="1" placeholder="e.g. 12000" {...form.register("limit", { required: "Add a budget limit", min: { value: 1, message: "Limit should be greater than zero" } })} /></div></FormField></div><button type="submit" className="button button-primary">Save budget</button></form>}
+    {showForm && <form className="inline-create-card" onSubmit={form.handleSubmit(submit)}><div className="inline-form-title"><span className="stat-icon violet"><Gauge size={17} /></span><div><strong>Plan your monthly limit</strong><p>Enter a category or choose one you created.</p></div><button type="button" className="icon-button small-icon" onClick={() => setShowForm(false)} aria-label="Close form"><X size={17} /></button></div><div className="form-row"><FormField label="Category" error={form.formState.errors.category?.message}><input list="expense-category-options" placeholder="Type a category" {...form.register("category", { required: "Enter a category", validate: (value) => Boolean(value.trim()) || "Enter a category" })} /><datalist id="expense-category-options">{categories.expense.map((category) => <option key={category} value={category} />)}</datalist></FormField><FormField label="Monthly limit" error={form.formState.errors.limit?.message}><div className="input-prefix"><span>₹</span><input type="number" min="1" placeholder="e.g. 12000" {...form.register("limit", { required: "Add a budget limit", min: { value: 1, message: "Limit should be greater than zero" } })} /></div></FormField></div><button type="submit" className="button button-primary" disabled={!form.formState.isValid || form.formState.isSubmitting}>Save budget</button></form>}
     {budgets.length ? <div className="budget-grid">{budgets.map((budget) => {
       const spent = monthTx.filter((tx) => tx.type === "expense" && tx.category === budget.category).reduce((sum, tx) => sum + Number(tx.amount), 0);
       return <BudgetCard key={budget.id} budget={budget} spent={spent} currency={currency} />;
@@ -466,12 +570,12 @@ function BudgetsPage() {
 
 function BudgetCard({ budget, spent, currency }) {
   const ratio = spent / Math.max(budget.limit, 1);
-  const percent = spent >= budget.limit ? 100 : Math.floor(ratio * 100);
+  const percent = ratio * 100;
   const danger = spent > budget.limit;
   const atLimit = spent === budget.limit;
   const warning = ratio >= 0.8 && !danger;
   const Icon = iconByCategory[budget.category] || CircleDollarSign;
-  return <article className={`budget-card ${danger ? "budget-danger" : warning ? "budget-warning" : ""}`}><div className="budget-card-top"><span className="category-icon"><Icon size={17} /></span><span className="budget-spent-label">{danger ? "Spending alert" : ""}</span></div><div className="budget-title">{budget.category}<span>{(danger || atLimit || warning) && <span className="budget-warning-label">{danger ? "Over budget" : atLimit ? "Limit reached" : "Almost there"}</span>}</span></div><div className="budget-numbers"><strong>{formatMoney(spent, currency)}</strong><span>of {formatMoney(budget.limit, currency)}</span></div><div className="progress-track"><span style={{ width: `${Math.min(percent, 100)}%` }} /></div><div className="budget-card-bottom"><span>{percent}% used</span><strong className={danger || atLimit || warning ? "remaining-alert" : ""}>{danger ? `${formatMoney(spent - budget.limit, currency)} over` : atLimit ? "At limit" : `${formatMoney(budget.limit - spent, currency)} left`}</strong></div></article>;
+  return <article className={`budget-card ${danger ? "budget-danger" : warning ? "budget-warning" : ""}`}><div className="budget-card-top"><span className="category-icon"><Icon size={17} /></span><span className="budget-spent-label">{danger ? "Spending alert" : ""}</span></div><div className="budget-title">{budget.category}<span>{(danger || atLimit || warning) && <span className="budget-warning-label">{danger ? "Over budget" : atLimit ? "Limit reached" : "Almost there"}</span>}</span></div><div className="budget-numbers"><strong>{formatMoney(spent, currency)}</strong><span>of {formatMoney(budget.limit, currency)}</span></div><div className="progress-track"><span style={{ width: `${Math.min(percent, 100)}%` }} /></div><div className="budget-card-bottom"><span>{formatPercent(percent)} used</span><strong className={danger || atLimit || warning ? "remaining-alert" : ""}>{danger ? `${formatMoney(spent - budget.limit, currency)} over` : atLimit ? "At limit" : `${formatMoney(budget.limit - spent, currency)} left`}</strong></div></article>;
 }
 
 function PasswordRequirements({ password }) {
@@ -481,19 +585,35 @@ function PasswordRequirements({ password }) {
 }
 
 function GoalsPage() {
-  const { goals, currency, addGoal, contributeToGoal } = useFinanceStore();
+  const { goals, currency, addGoal, updateGoal, deleteGoal, contributeToGoal } = useFinanceStore();
   const [showForm, setShowForm] = useState(false);
+  const [editingGoal, setEditingGoal] = useState(null);
   const [contributionGoal, setContributionGoal] = useState(null);
   const [notice, setNotice] = useState("");
   const form = useForm({ defaultValues: { name: "", target: "", deadline: "", icon: "target" } });
   const contributionForm = useForm({ defaultValues: { amount: "" } });
   const saveGoal = async (values) => {
-    const saved = await addGoal({ ...values, target: Number(values.target) });
+    const payload = { ...values, target: Number(values.target) };
+    if (editingGoal && payload.target < editingGoal.saved) {
+      setNotice(`The target cannot be below ${formatMoney(editingGoal.saved, currency)}, already saved.`);
+      return;
+    }
+    const saved = editingGoal ? await updateGoal(editingGoal.id, payload) : await addGoal(payload);
     if (!saved) return;
     form.reset({ name: "", target: "", deadline: "", icon: "target" });
     setShowForm(false);
-    setNotice("Your new goal is ready. One step at a time!");
+    setEditingGoal(null);
+    setNotice(editingGoal ? "Your savings goal has been updated." : "Your new goal is ready. One step at a time!");
     window.setTimeout(() => setNotice(""), 3500);
+  };
+  const editGoal = (goal) => {
+    setEditingGoal(goal);
+    form.reset({ name: goal.name, target: String(goal.target), deadline: goal.deadline || "", icon: goal.icon || "target" });
+    setShowForm(true);
+  };
+  const removeGoal = async (goal) => {
+    if (!window.confirm(`Delete “${goal.name}”? This cannot be undone.`)) return;
+    if (await deleteGoal(goal.id)) setNotice("Savings goal deleted.");
   };
   const contribute = async (values) => {
     const saved = await contributeToGoal(contributionGoal.id, Number(values.amount));
@@ -504,24 +624,25 @@ function GoalsPage() {
   return <section className="page-section">
     <div className="section-intro-row"><div><div className="goal-summary"><span className="goal-summary-icon"><Target size={19} /></span><span><strong>{goals.length} goals in progress</strong><small>You’re building something good.</small></span></div></div><button className="button button-primary" onClick={() => setShowForm(!showForm)}><Plus size={16} /> New savings goal</button></div>
     {notice && <div className="success-message"><Check size={16} />{notice}</div>}
-    {showForm && <form className="inline-create-card goal-create" onSubmit={form.handleSubmit(saveGoal)}><div className="inline-form-title"><span className="stat-icon green"><Flag size={17} /></span><div><strong>What are you saving for?</strong><p>Give your goal a name, amount, and a little deadline.</p></div><button type="button" className="icon-button small-icon" onClick={() => setShowForm(false)} aria-label="Close form"><X size={17} /></button></div><FormField label="Goal name" error={form.formState.errors.name?.message}><input placeholder="e.g. A little getaway" {...form.register("name", { required: "Add a name for your goal" })} /></FormField><div className="form-row"><FormField label="Target amount" error={form.formState.errors.target?.message}><div className="input-prefix"><span>₹</span><input type="number" min="1" placeholder="e.g. 50000" {...form.register("target", { required: "Enter your target", min: { value: 1, message: "Target should be greater than zero" } })} /></div></FormField><FormField label="Target date"><input type="date" min={localDate()} {...form.register("deadline")} /></FormField></div><button type="submit" className="button button-primary">Create this goal</button></form>}
-    <div className="goal-grid">{goals.map((goal, index) => <GoalCard key={goal.id} goal={goal} currency={currency} index={index} onContribute={() => setContributionGoal(goal)} />)}{!goals.length && <EmptyState icon={Target} title="Dream it, then plan it" text="Create your first savings goal and watch the progress add up." />}</div>
+    {showForm && <form className="inline-create-card goal-create" onSubmit={form.handleSubmit(saveGoal)}><div className="inline-form-title"><span className="stat-icon green"><Flag size={17} /></span><div><strong>{editingGoal ? "Update your savings goal" : "What are you saving for?"}</strong><p>Give your goal a name, amount, and a little deadline.</p></div><button type="button" className="icon-button small-icon" onClick={() => { setShowForm(false); setEditingGoal(null); form.reset(); }} aria-label="Close form"><X size={17} /></button></div><FormField label="Goal name" error={form.formState.errors.name?.message}><input placeholder="e.g. A little getaway" {...form.register("name", { required: "Add a name for your goal" })} /></FormField><div className="form-row"><FormField label="Target amount" error={form.formState.errors.target?.message}><div className="input-prefix"><span>₹</span><input type="number" min="1" placeholder="e.g. 50000" {...form.register("target", { required: "Enter your target", min: { value: 1, message: "Target should be greater than zero" } })} /></div></FormField><FormField label="Target date"><input type="date" min={localDate()} {...form.register("deadline")} /></FormField></div><button type="submit" className="button button-primary">{editingGoal ? "Save changes" : "Create this goal"}</button></form>}
+    <div className="goal-grid">{goals.map((goal, index) => <GoalCard key={goal.id} goal={goal} currency={currency} index={index} onContribute={() => setContributionGoal(goal)} onEdit={() => editGoal(goal)} onDelete={() => removeGoal(goal)} />)}{!goals.length && <EmptyState icon={Target} title="Dream it, then plan it" text="Create your first savings goal and watch the progress add up." />}</div>
     <div className="goal-encouragement"><span className="encouragement-art"><Sparkles size={21} /></span><div><strong>Progress is progress, no matter how small.</strong><p>Even a tiny regular contribution can make a big difference over time.</p></div></div>
     {contributionGoal && <Modal title="Add to your goal" subtitle={`Every little bit brings ${contributionGoal.name} closer.`} onClose={() => setContributionGoal(null)}><form className="dialog-form" onSubmit={contributionForm.handleSubmit(contribute)}><FormField label="How much would you like to add?" error={contributionForm.formState.errors.amount?.message}><div className="input-prefix"><span>₹</span><input type="number" min="1" max={contributionGoal.target - contributionGoal.saved} placeholder="e.g. 2500" autoFocus {...contributionForm.register("amount", { required: "Enter an amount", min: { value: 1, message: "Add at least ₹1" }, max: { value: contributionGoal.target - contributionGoal.saved, message: "That’s more than this goal needs" } })} /></div></FormField><div className="dialog-actions"><button type="button" className="button button-quiet" onClick={() => setContributionGoal(null)}>Cancel</button><button className="button button-primary" type="submit">Add savings</button></div></form></Modal>}
   </section>;
 }
 
-function GoalCard({ goal, currency, index, onContribute }) {
-  const percent = Math.min(100, Math.round(goal.saved / Math.max(goal.target, 1) * 100));
+function GoalCard({ goal, currency, index, onContribute, onEdit, onDelete }) {
+  const percent = Math.min(100, goal.saved / Math.max(goal.target, 1) * 100);
   const icon = goal.icon === "laptop" ? Laptop : goal.icon === "plane" ? Plane : goal.icon === "shield" ? ShieldCheck : Target;
   const Icon = icon;
-  return <article className={`goal-card goal-tone-${index % 3}`}><div className="goal-card-top"><span className="goal-art-icon"><Icon size={20} /></span><button className="icon-button small-icon" aria-label={`Options for ${goal.name}`}><MoreHorizontal size={19} /></button></div><span className="goal-eyebrow">SAVING FOR</span><h3>{goal.name}</h3><div className="goal-amounts"><strong>{formatMoney(goal.saved, currency)}</strong><span>of {formatMoney(goal.target, currency)}</span></div><div className="progress-track goal-track"><span style={{ width: `${percent}%` }} /></div><div className="goal-progress-caption"><span>{percent}% there</span><span>{goal.deadline ? `Target: ${new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "numeric" }).format(new Date(`${goal.deadline}T00:00:00`))}` : "No deadline"}</span></div><div className="goal-card-footer"><span><span className="goal-status-dot" />{percent >= 100 ? "Goal reached!" : `${formatMoney(Math.max(goal.target - goal.saved, 0), currency)} to go`}</span><button className="button button-soft" onClick={onContribute} disabled={percent >= 100}><Plus size={15} /> Add savings</button></div></article>;
+  const [menuOpen, setMenuOpen] = useState(false);
+  return <article className={`goal-card goal-tone-${index % 3}`}><div className="goal-card-top"><span className="goal-art-icon"><Icon size={20} /></span><div className="goal-options"><button className="icon-button small-icon" type="button" aria-label={`Options for ${goal.name}`} aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}><MoreHorizontal size={19} /></button>{menuOpen && <div className="goal-options-menu" role="menu"><button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onEdit(); }}><Pencil size={14} /> Edit goal</button><button type="button" role="menuitem" className="goal-delete-option" onClick={() => { setMenuOpen(false); onDelete(); }}><Trash2 size={14} /> Delete goal</button></div>}</div></div><span className="goal-eyebrow">SAVING FOR</span><h3>{goal.name}</h3><div className="goal-amounts"><strong>{formatMoney(goal.saved, currency)}</strong><span>of {formatMoney(goal.target, currency)}</span></div><div className="progress-track goal-track"><span style={{ width: `${percent}%` }} /></div><div className="goal-progress-caption"><span>{formatPercent(percent)} there</span><span>{goal.deadline ? `Target: ${new Intl.DateTimeFormat("en", { day: "numeric", month: "short", year: "numeric" }).format(new Date(`${goal.deadline}T00:00:00`))}` : "No deadline"}</span></div><div className="goal-card-footer"><span><span className="goal-status-dot" />{percent >= 100 ? "Goal reached!" : `${formatMoney(Math.max(goal.target - goal.saved, 0), currency)} to go`}</span><button className="button button-soft" onClick={onContribute} disabled={percent >= 100}><Plus size={15} /> Add savings</button></div></article>;
 }
 
 function GoalMini({ goal, currency }) {
-  const percent = Math.min(100, Math.round(goal.saved / Math.max(goal.target, 1) * 100));
+  const percent = Math.min(100, goal.saved / Math.max(goal.target, 1) * 100);
   const Icon = goal.icon === "laptop" ? Laptop : goal.icon === "plane" ? Plane : ShieldCheck;
-  return <div className="goal-mini"><span className="goal-mini-icon"><Icon size={17} /></span><div className="goal-mini-content"><div><strong>{goal.name}</strong><span>{percent}%</span></div><div className="progress-track"><span style={{ width: `${percent}%` }} /></div><small>{formatMoney(goal.saved, currency)} of {formatMoney(goal.target, currency)}</small></div></div>;
+  return <div className="goal-mini"><span className="goal-mini-icon"><Icon size={17} /></span><div className="goal-mini-content"><div><strong>{goal.name}</strong><span>{formatPercent(percent)}</span></div><div className="progress-track"><span style={{ width: `${percent}%` }} /></div><small>{formatMoney(goal.saved, currency)} of {formatMoney(goal.target, currency)}</small></div></div>;
 }
 
 function InsightsPage() {
@@ -532,21 +653,23 @@ function InsightsPage() {
   const previous = summarizeTransactions(lastTx);
   const spendByCategory = getCategorySpend(monthTx);
   const top = spendByCategory[0];
-  const spendDelta = previous.expenses ? Math.round((current.expenses - previous.expenses) / previous.expenses * 100) : 0;
-  const savingsRate = current.income ? Math.max(0, Math.round((current.income - current.expenses) / current.income * 100)) : 0;
-  const score = Math.max(34, Math.min(98, Math.round(54 + savingsRate * 0.45 + (spendDelta <= 0 ? 9 : 0) - spendDelta * 0.15)));
+  const spendDelta = compareToPreviousMonth(current.expenses, previous.expenses, lastTx.length);
+  const savingsRate = calculateSavingsRate(current.income, current.expenses);
+  const score = monthTx.length
+    ? Math.max(0, Math.min(100, Math.round((savingsRate || 0) * 0.45 + (spendDelta !== null && spendDelta <= 0 ? 9 : 0) - (spendDelta || 0) * 0.15)))
+    : 0;
   const mutation = useMutation({
     mutationFn: async () => (await api.post("/insights/analyze", { transactions: monthTx, previousTransactions: lastTx })).data,
   });
   const analyze = () => mutation.mutate();
   return <section className="page-section insights-page">
-    <div className="insights-score-card"><div className="score-orb"><div className="score-ring"><strong>{score}</strong><small>out of 100</small></div></div><div className="score-copy"><span className="insight-kicker">YOUR FINANCIAL WELLNESS</span><h2>{score >= 75 ? "You’re finding your rhythm." : "You’re building good habits."}</h2><p>Your money health score looks at spending patterns, savings progress, and how you’re tracking against your goals.</p><div className="score-pills"><span><span className="score-pip green-pip" />Savings rate <strong>{savingsRate}%</strong></span><span><span className="score-pip purple-pip" />Active goals <strong>{goals.length}</strong></span></div></div><Sparkles className="score-sparkle" size={40} /></div>
+    <div className="insights-score-card"><div className="score-orb" style={{ background: `conic-gradient(#7672d8 0 ${score}%, #dedcf1 ${score}% 100%)` }}><div className="score-ring"><strong>{score}</strong><small>out of 100</small></div></div><div className="score-copy"><span className="insight-kicker">YOUR FINANCIAL WELLNESS</span><h2>{score >= 75 ? "You’re finding your rhythm." : "You’re building good habits."}</h2><p>Your money health score looks at spending patterns, savings progress, and how you’re tracking against your goals.</p><div className="score-pills"><span><span className="score-pip green-pip" />Savings rate <strong>{formatPercent(savingsRate)}</strong></span><span><span className="score-pip purple-pip" />Active goals <strong>{goals.length}</strong></span></div></div><Sparkles className="score-sparkle" size={40} /></div>
     <div className="insights-section-heading"><div><h2>Your monthly read</h2><p>Real patterns, kind suggestions. Never judgment.</p></div><button className="button button-secondary" onClick={analyze} disabled={mutation.isPending}><Sparkles size={15} />{mutation.isPending ? "Looking at your numbers..." : "Get AI analysis"}</button></div>
     {mutation.isError && <p className="form-feedback" role="alert">{getApiError(mutation.error)} We’ve still put together the insights below from your local data.</p>}
     {mutation.data?.insights && <div className="ai-result"><Sparkles size={16} /><div><span className="insight-kicker">{mutation.data.source === "gemini" ? "AI ANALYSIS" : "BASED ON YOUR DATA"}</span><p>{mutation.data.insights}</p></div></div>}
     <div className="insight-cards">
-      <InsightCard tone="lavender" icon={TrendingUp} label="YOUR SPENDING" title={spendDelta > 0 ? `Spending is up ${spendDelta}%` : spendDelta < 0 ? `Spending is down ${Math.abs(spendDelta)}%` : "You're on a steady track"} text={spendDelta > 0 ? `You spent ${formatMoney(current.expenses, currency)} this month. Take a closer look at ${top?.name?.toLowerCase() || "your flexible spending"} for an easy place to adjust.` : `You've spent ${formatMoney(current.expenses, currency)} this month. Keeping to this pace gives your savings room to grow.`} />
-      <InsightCard tone="mint" icon={CircleDollarSign} label="A GENTLE NUDGE" title={top ? `${top.name} is your biggest category` : "Every little habit counts"} text={top ? `${Math.round(top.value / Math.max(current.expenses, 1) * 100)}% of your spending is in ${top.name.toLowerCase()}. A small adjustment here could free up ${formatMoney(Math.round(top.value * 0.1), currency)} a month.` : "Add a few expenses to get a clearer picture of your spending habits."} />
+      <InsightCard tone="lavender" icon={TrendingUp} label="YOUR SPENDING" title={spendDelta > 0 ? `Spending is up ${formatPercent(spendDelta)}` : spendDelta < 0 ? `Spending is down ${formatPercent(Math.abs(spendDelta))}` : "You're on a steady track"} text={spendDelta > 0 ? `You spent ${formatMoney(current.expenses, currency)} this month. Take a closer look at ${top?.name?.toLowerCase() || "your flexible spending"} for an easy place to adjust.` : `You've spent ${formatMoney(current.expenses, currency)} this month. Keeping to this pace gives your savings room to grow.`} />
+      <InsightCard tone="mint" icon={CircleDollarSign} label="A GENTLE NUDGE" title={top ? `${top.name} is your biggest category` : "Every little habit counts"} text={top ? `${formatPercent((top.value / Math.max(current.expenses, 1)) * 100)} of your spending is in ${top.name.toLowerCase()}. A small adjustment here could free up ${formatMoney(top.value * 0.1, currency)} a month.` : "Add a few expenses to get a clearer picture of your spending habits."} />
       <InsightCard tone="peach" icon={Target} label="LOOKING AHEAD" title={`${goals.length} lovely things to save for`} text={`You’ve got ${goals.length} active ${goals.length === 1 ? "goal" : "goals"}. Set up a small weekly transfer to keep the momentum going without thinking about it.`} />
     </div>
     <div className="insights-note"><ShieldCheck size={17} /><span>These insights are here to help you feel informed, not to give financial advice. Your choices are always yours.</span></div>
@@ -606,8 +729,8 @@ function ReportsPage() {
   return <section className="page-section report-page">
     <div className="report-controls"><div className="segmented-control" role="group" aria-label="Report period"><button className={period === "month" ? "selected" : ""} onClick={() => setPeriod("month")}>This month</button><button className={period === "year" ? "selected" : ""} onClick={() => setPeriod("year")}>This year</button></div><div className="export-actions"><button className="button button-secondary" onClick={exportCsv}><Download size={15} /> CSV</button><button className="button button-secondary" onClick={exportExcel}><FileDown size={15} /> Excel</button><button className="button button-primary" onClick={exportPdf}><FileDown size={15} /> Download PDF</button></div></div>
     <div className="report-summary-grid"><SummaryTile label="Income" value={formatMoney(totals.income, currency)} icon={ArrowDownLeft} tone="green" /><SummaryTile label="Expenses" value={formatMoney(totals.expenses, currency)} icon={ArrowUpRight} tone="orange" /><SummaryTile label="Net savings" value={formatMoney(totals.income - totals.expenses, currency)} icon={Wallet} tone="violet" /><SummaryTile label="Transactions" value={reportTx.length.toString()} icon={ArrowLeftRight} tone="blue" /></div>
-    <div className="panel report-chart-panel"><PanelHeading title="Income & expenses" subtitle="A month-by-month view of your cash flow"><label className="sort-select report-type-select"><select value={reportType} onChange={(event) => setReportType(event.target.value)}><option value="category">All categories</option><option value="income">Income only</option><option value="expense">Expenses only</option></select><ChevronDown size={13} /></label></PanelHeading><div className="report-chart"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={trendData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="4 5" /><XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 11 }} dy={9} /><YAxis axisLine={false} tickLine={false} tickFormatter={(value) => compactMoney(value, currency)} tick={{ fill: "var(--muted)", fontSize: 10 }} /><Tooltip content={<ChartTooltip currency={currency} />} /><Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "var(--muted)" }} /><Bar dataKey="income" name="Income" fill="#55b99b" radius={[4, 4, 0, 0]} barSize={14} hide={reportType === "expense"} /><Bar dataKey="expenses" name="Expenses" fill="#8580e5" radius={[4, 4, 0, 0]} barSize={14} hide={reportType === "income"} /></ComposedChart></ResponsiveContainer></div></div>
-    <div className="panel category-report-panel"><PanelHeading title="Spending by category" subtitle="Where your expenses are going"><span className="report-period-label">{period === "month" ? "THIS MONTH" : "THIS YEAR"}</span></PanelHeading>{categories.length ? <div className="category-report-list">{categories.map((item, index) => <div className="category-report-row" key={item.name}><span className="category-report-name"><i style={{ background: expenseColors[index % expenseColors.length] }} />{item.name}</span><div className="category-report-track"><span style={{ width: `${Math.round(item.value / categories[0].value * 100)}%`, background: expenseColors[index % expenseColors.length] }} /></div><strong>{formatMoney(item.value, currency)}</strong><small>{Math.round(item.value / Math.max(totals.expenses, 1) * 100)}%</small></div>)}</div> : <EmptyState icon={ChartNoAxesCombined} title="Not much to report yet" text="Add some expenses and your category report will appear here." />}</div>
+    <div className="panel report-chart-panel"><PanelHeading title="Income & expenses" subtitle="A month-by-month view of your cash flow"><label className="sort-select report-type-select"><select value={reportType} onChange={(event) => setReportType(event.target.value)}><option value="category">All categories</option><option value="income">Income only</option><option value="expense">Expenses only</option></select><ChevronDown size={13} /></label></PanelHeading><div className="report-chart"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={trendData} margin={{ top: 10, right: 10, left: -15, bottom: 0 }}><CartesianGrid vertical={false} stroke="var(--line)" strokeDasharray="4 5" /><XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fill: "var(--muted)", fontSize: 11 }} dy={9} /><YAxis axisLine={false} tickLine={false} tickFormatter={(value) => formatMoney(value, currency)} tick={{ fill: "var(--muted)", fontSize: 10 }} /><Tooltip content={<ChartTooltip currency={currency} />} /><Legend iconType="circle" wrapperStyle={{ fontSize: 11, color: "var(--muted)" }} /><Bar dataKey="income" name="Income" fill="#55b99b" radius={[4, 4, 0, 0]} barSize={14} hide={reportType === "expense"} /><Bar dataKey="expenses" name="Expenses" fill="#8580e5" radius={[4, 4, 0, 0]} barSize={14} hide={reportType === "income"} /></ComposedChart></ResponsiveContainer></div></div>
+    <div className="panel category-report-panel"><PanelHeading title="Spending by category" subtitle="Where your expenses are going"><span className="report-period-label">{period === "month" ? "THIS MONTH" : "THIS YEAR"}</span></PanelHeading>{categories.length ? <div className="category-report-list">{categories.map((item, index) => <div className="category-report-row" key={item.name}><span className="category-report-name"><i style={{ background: expenseColors[index % expenseColors.length] }} />{item.name}</span><div className="category-report-track"><span style={{ width: `${(item.value / categories[0].value) * 100}%`, background: expenseColors[index % expenseColors.length] }} /></div><strong>{formatMoney(item.value, currency)}</strong><small>{formatPercent((item.value / Math.max(totals.expenses, 1)) * 100)}</small></div>)}</div> : <EmptyState icon={ChartNoAxesCombined} title="Not much to report yet" text="Add some expenses and your category report will appear here." />}</div>
   </section>;
 }
 
@@ -616,7 +739,7 @@ function SummaryTile({ label, value, icon: Icon, tone }) {
 }
 
 function SettingsPage() {
-  const { profile, currency, setCurrency, setProfile, theme, setTheme, categories, addCategory } = useFinanceStore();
+  const { profile, currency, setCurrency, openingBalance, setOpeningBalance, setProfile, theme, setTheme, categories, addCategory, removeCategory } = useFinanceStore();
   const { mode } = useAuthStore();
   const signOut = useAuthStore((state) => state.signOut);
   const navigate = useNavigate();
@@ -626,9 +749,15 @@ function SettingsPage() {
   const [error, setError] = useState("");
   const [passwordForm, setPasswordForm] = useState({ currentPassword: "", newPassword: "" });
   const form = useForm({ defaultValues: profile });
+  const balanceForm = useForm({ defaultValues: { openingBalance } });
   const updateProfile = async (values) => {
     if (!(await setProfile(values))) return;
     setMessage("Your profile details have been saved.");
+    setTimeout(() => setMessage(""), 3000);
+  };
+  const updateOpeningBalance = async ({ openingBalance: value }) => {
+    if (!(await setOpeningBalance(Number(value)))) return;
+    setMessage("Your starting balance has been saved.");
     setTimeout(() => setMessage(""), 3000);
   };
   const updatePassword = async (event) => {
@@ -654,13 +783,21 @@ function SettingsPage() {
     setMessage("Category added.");
     setTimeout(() => setMessage(""), 3000);
   };
+  const deleteCategory = async (category) => {
+    if (!window.confirm(`Remove the ${category} category? Existing transactions will keep their category name.`)) return;
+    if (await removeCategory(categoryType, category)) {
+      setMessage("Category removed.");
+      setTimeout(() => setMessage(""), 3000);
+    }
+  };
   return <section className="page-section settings-page">
     {(message || error) && <div className={error ? "error-message" : "success-message"}>{error ? <CircleHelp size={16} /> : <Check size={16} />}{error || message}</div>}
     <div className="settings-layout">
       <div className="settings-main">
         <article className="settings-card"><div className="settings-card-heading"><span className="settings-card-icon"><div className="avatar settings-avatar">{initials(profile.name)}</div></span><div><h2>Personal details</h2><p>The account details we use to personalize your experience.</p></div></div><form className="settings-form" onSubmit={form.handleSubmit(updateProfile)}><div className="form-row"><FormField label="Full name"><input {...form.register("name", { required: "Enter your name" })} /></FormField><FormField label="Email address"><input type="email" {...form.register("email", { required: "Enter your email" })} /></FormField></div><div className="settings-actions"><span>Your information is private to you.</span><button type="submit" className="button button-primary">Save changes</button></div></form></article>
+        <article className="settings-card"><div className="settings-card-heading"><span className="settings-card-icon"><Wallet size={20} /></span><div><h2>Starting balance</h2><p>Set the balance you had before tracking transactions. Your dashboard adds recorded income and subtracts expenses from it.</p></div></div><form className="settings-form" onSubmit={balanceForm.handleSubmit(updateOpeningBalance)}><FormField label="Starting balance" error={balanceForm.formState.errors.openingBalance?.message}><div className="input-prefix"><span>{new Intl.NumberFormat("en", { style: "currency", currency, currencyDisplay: "narrowSymbol" }).formatToParts(0).find((part) => part.type === "currency")?.value || currency}</span><input type="number" step="0.01" min="-1000000000" max="1000000000" {...balanceForm.register("openingBalance", { required: "Enter your starting balance", valueAsNumber: true, min: { value: -1000000000, message: "Balance must be at least -1,000,000,000" }, max: { value: 1000000000, message: "Balance must be at most 1,000,000,000" } })} /></div></FormField><div className="settings-actions"><span>Income, spending, and savings are calculated from your transactions.</span><button type="submit" className="button button-primary">Save balance</button></div></form></article>
         <article className="settings-card"><div className="settings-card-heading"><span className="settings-card-icon"><ShieldCheck size={20} /></span><div><h2>Security</h2><p>Keep your account safe and sound.</p></div></div><form className="settings-form" onSubmit={updatePassword}><div className="form-row"><FormField label="Current password"><input type="password" autoComplete="current-password" value={passwordForm.currentPassword} onChange={(event) => setPasswordForm({ ...passwordForm, currentPassword: event.target.value })} /></FormField><FormField label="New password"><input type="password" minLength={8} autoComplete="new-password" value={passwordForm.newPassword} onChange={(event) => setPasswordForm({ ...passwordForm, newPassword: event.target.value })} /><PasswordRequirements password={passwordForm.newPassword} /></FormField></div><div className="settings-actions"><span>Use a unique password for this account.</span><button className="button button-secondary" type="submit">Update password</button></div></form></article>
-        <article className="settings-card"><div className="settings-card-heading"><span className="settings-card-icon"><Package size={20} /></span><div><h2>Your categories</h2><p>Make your spending categories feel like yours.</p></div></div><form className="add-setting-category" onSubmit={submitCategory}><select value={categoryType} onChange={(event) => setCategoryType(event.target.value)} aria-label="Category type"><option value="expense">Expense</option><option value="income">Income</option></select><input value={categoryValue} onChange={(event) => setCategoryValue(event.target.value)} placeholder="Name your category" /><button className="button button-secondary" type="submit"><Plus size={15} /> Add</button></form><div className="settings-category-list">{categories[categoryType].map((category, index) => <span key={category} style={{ "--category-color": expenseColors[index % expenseColors.length] }}><i />{category}</span>)}</div></article>
+        <article className="settings-card"><div className="settings-card-heading"><span className="settings-card-icon"><Package size={20} /></span><div><h2>Your categories</h2><p>Add categories you need, or remove ones you no longer use.</p></div></div><form className="add-setting-category" onSubmit={submitCategory}><select value={categoryType} onChange={(event) => setCategoryType(event.target.value)} aria-label="Category type"><option value="expense">Expense</option><option value="income">Income</option></select><input value={categoryValue} onChange={(event) => setCategoryValue(event.target.value)} placeholder="Name your category" /><button className="button button-secondary" type="submit" disabled={!categoryValue.trim()}><Plus size={15} /> Add</button></form><div className="settings-category-list">{categories[categoryType].length ? categories[categoryType].map((category, index) => <span key={category} style={{ "--category-color": expenseColors[index % expenseColors.length] }}><i />{category}<button type="button" className="category-delete" onClick={() => deleteCategory(category)} aria-label={`Remove ${category}`} title={`Remove ${category}`}><Trash2 size={13} /></button></span>) : <span className="stat-breakdown-empty">No categories yet. Add one above.</span>}</div></article>
       </div>
       <aside className="settings-side">
         <article className="settings-card preference-card"><div className="settings-card-heading"><span className="settings-card-icon"><CircleDollarSign size={20} /></span><div><h2>Preferences</h2><p>Small details, your way.</p></div></div><label className="preference-row"><span><strong>Currency</strong><small>Used across your dashboard</small></span><select value={currency} onChange={(event) => setCurrency(event.target.value)}><option value="INR">₹ INR</option><option value="USD">$ USD</option><option value="EUR">€ EUR</option><option value="GBP">£ GBP</option><option value="CAD">C$ CAD</option><option value="AUD">A$ AUD</option></select></label><div className="preference-row"><span><strong>Appearance</strong><small>Make yourself at home</small></span><div className="theme-choice"><button className={theme === "light" ? "selected" : ""} aria-label="Light theme" onClick={() => setTheme("light")}><Sun size={16} /></button><button className={theme === "dark" ? "selected" : ""} aria-label="Dark theme" onClick={() => setTheme("dark")}><Moon size={16} /></button></div></div></article>
@@ -673,6 +810,13 @@ function SettingsPage() {
 function Modal({ title, subtitle, onClose, children }) {
   const operationError = useFinanceStore((state) => state.operationError);
   const clearOperationError = useFinanceStore((state) => state.clearOperationError);
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-heading"><div className="modal-heading"><div><h2 id="modal-heading">{title}</h2><p>{subtitle}</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div>{operationError && <div className="error-message" role="alert"><CircleHelp size={16} /><span>{operationError}</span><button type="button" className="text-button" onClick={clearOperationError}>Dismiss</button></div>}{children}</section></div>;
 }
 
@@ -684,17 +828,17 @@ function PanelHeading({ title, subtitle, children }) {
   return <div className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div>{children}</div>;
 }
 
-function TransactionList({ transactions, currency }) {
+function TransactionList({ transactions, currency, onEdit, onDelete }) {
   return <div className="transaction-list">{transactions.length ? transactions.map((tx) => {
     const Icon = iconByCategory[tx.category] || CircleDollarSign;
-    return <div className="transaction-list-row" key={tx.id}><span className={`category-icon ${tx.type === "income" ? "cat-income" : ""}`}><Icon size={16} /></span><div className="transaction-list-copy"><strong>{tx.title}</strong><span>{tx.category} <i /> {new Intl.DateTimeFormat("en", { day: "numeric", month: "short" }).format(new Date(`${tx.date}T00:00:00`))}</span></div><strong className={`list-amount ${tx.type === "income" ? "amount-income" : ""}`}>{tx.type === "income" ? "+" : "−"}{formatMoney(tx.amount, currency, true)}</strong></div>;
-  }) : <EmptyState icon={ArrowLeftRight} title="Nothing to see just yet" text="Add a transaction to get started." />}</div>;
+    return <div className="transaction-list-row" key={tx.id}><span className={`category-icon ${tx.type === "income" ? "cat-income" : ""}`}><Icon size={16} /></span><div className="transaction-list-copy"><strong>{tx.title}</strong><span>{tx.category} <i /> {new Intl.DateTimeFormat("en", { day: "numeric", month: "short" }).format(new Date(`${tx.date}T00:00:00`))}</span></div><strong className={`list-amount ${tx.type === "income" ? "amount-income" : ""}`}>{tx.type === "income" ? "+" : "−"}{formatMoney(tx.amount, currency)}</strong><div className="transaction-list-actions"><button type="button" className="icon-button small-icon" onClick={() => onEdit?.(tx)} aria-label={`Edit ${tx.title}`}><Pencil size={14} /></button><button type="button" className="icon-button small-icon delete-action" onClick={() => onDelete?.(tx)} aria-label={`Delete ${tx.title}`}><Trash2 size={14} /></button></div></div>;
+  }) : <EmptyState icon={ArrowLeftRight} title="No transactions yet. Add your first one." text="Record an income or expense to see it here." />}</div>;
 }
 
 function BudgetMini({ name, used, limit, currency }) {
-  const percent = Math.round(used / Math.max(limit, 1) * 100);
+  const percent = (used / Math.max(limit, 1)) * 100;
   const over = used > limit;
-  return <div className={`budget-mini ${over ? "budget-mini-danger" : ""}`}><div className="budget-mini-top"><span>{name}</span><strong>{formatMoney(used, currency, true)} <small>of {formatMoney(limit, currency, true)}</small></strong></div><div className={`progress-track ${over ? "progress-danger" : used / Math.max(limit, 1) >= 0.8 ? "progress-warn" : ""}`}><span style={{ width: `${Math.min(100, percent)}%` }} /></div></div>;
+  return <div className={`budget-mini ${over ? "budget-mini-danger" : ""}`}><div className="budget-mini-top"><span>{name}</span><strong>{formatMoney(used, currency)} <small>of {formatMoney(limit, currency)}</small></strong></div><div className={`progress-track ${over ? "progress-danger" : used / Math.max(limit, 1) >= 0.8 ? "progress-warn" : ""}`}><span style={{ width: `${Math.min(100, percent)}%` }} /></div></div>;
 }
 
 function EmptyState({ icon: Icon = Package, title, text }) {
@@ -704,37 +848,6 @@ function EmptyState({ icon: Icon = Package, title, text }) {
 function ChartTooltip({ active, payload, label, currency }) {
   if (!active || !payload?.length) return null;
   return <div className="chart-tooltip"><strong>{label}</strong>{payload.map((item) => <span key={item.dataKey}><i style={{ backgroundColor: item.color }} />{item.name || item.dataKey}<b>{formatMoney(item.value, currency)}</b></span>)}</div>;
-}
-
-function getCategorySpend(transactions) {
-  const totals = new Map();
-  transactions.filter((tx) => tx.type === "expense").forEach((tx) => totals.set(tx.category, (totals.get(tx.category) || 0) + Number(tx.amount)));
-  return [...totals].map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
-}
-
-function getTrendData(transactions, count = 6) {
-  const now = new Date();
-  return Array.from({ length: count }, (_, index) => {
-    const date = new Date(now.getFullYear(), now.getMonth() - count + index + 1, 1);
-    const list = transactions.filter((tx) => {
-      const txDate = new Date(`${tx.date}T00:00:00`);
-      return txDate.getMonth() === date.getMonth() && txDate.getFullYear() === date.getFullYear();
-    });
-    const totals = summarizeTransactions(list);
-    const hasData = list.length > 0;
-    const fallbackIncome = [77000, 80500, 91000, 87000, 94000, 92000][index % 6];
-    const fallbackSpend = [52000, 48900, 57800, 55200, 63400, 60100][index % 6];
-    return { month: monthShort(date), income: hasData ? totals.income : fallbackIncome, expenses: hasData ? totals.expenses : fallbackSpend };
-  });
-}
-
-function compare(current, previous) {
-  if (!previous) return current ? 100 : 0;
-  return Math.round((current - previous) / previous * 100);
-}
-
-function compactMoney(value, currency = "INR") {
-  return new Intl.NumberFormat("en-IN", { style: "currency", currency, notation: "compact", maximumFractionDigits: 0 }).format(value);
 }
 
 function initials(name = "") {

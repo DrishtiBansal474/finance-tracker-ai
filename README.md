@@ -5,10 +5,16 @@ A personal finance dashboard for tracking transactions, monthly budgets, savings
 ## Features
 
 - Transaction tracking and reports
+- Transaction-based monthly summaries, category breakdowns, and money flow
+- User-defined income and expense categories; new accounts start with no preset categories
+- Customizable starting balance; current balance reflects recorded income and expenses
+- Transactions and opening balance persist locally, with signed-in data synced to your account
 - Monthly budgets with near-limit and overspending alerts
 - Savings goals
-- Account registration, login, and password reset with HttpOnly JWT session cookies
+- Account registration with email confirmation, login, and password reset with HttpOnly JWT session cookies
 - Strong password requirements and light/dark themes
+
+Set your starting balance in **Settings**. Dashboard income, spending, and savings are calculated from your transaction history.
 
 ## Requirements
 
@@ -45,7 +51,7 @@ To generate a JWT secret, run:
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
-Password reset emails require `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`. These settings are optional for other local development.
+Email confirmation and password reset require `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_FROM`. `SMTP_FROM` must be a sender address approved by your email provider. New accounts cannot sign in until they use the verification link sent to their inbox.
 
 Run the session-cookie tests with:
 
